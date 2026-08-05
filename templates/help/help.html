@@ -1,0 +1,53 @@
+<h2>Zendure SolarFlow</h2>
+
+<p>Bindet Zendure-SolarFlow-Speicher an Loxone an &mdash; <b>ohne Cloud und ohne
+Zendure-Konto</b>.</p>
+
+<h3>Zwei Wege, beide lokal</h3>
+<p><b>HTTP</b> &mdash; SolarFlow 800, 800 Plus, 800 Pro und die AC-Reihe
+beantworten im Heimnetz unmittelbar
+<span class="sm-mono">http://&lt;ip&gt;/properties/report</span>. Es gen&uuml;gt,
+die IP-Adresse einzutragen.</p>
+<p><b>MQTT</b> &mdash; Hub 1200, Hub 2000, Hyper 2000, Ace 1500 und AIO 2400
+sprechen nur MQTT. Sie werden einmalig auf den Broker des LoxBerry umgestellt
+(Zendure-App oder Bluetooth-Werkzeug) und melden sich danach von selbst.
+<b>Achtung:</b> Danach zeigt die Zendure-App keine Werte mehr an &mdash; ein
+Ger&auml;t kann entweder Cloud oder lokal, nicht beides.</p>
+
+<h3>So gehen Sie vor</h3>
+<ol>
+<li><b>Einstellungen:</b> Ger&auml;te eintragen, speichern, dann
+<i>Dienst starten</i>.</li>
+<li><b>Test:</b> Die Selbstpr&uuml;fung sagt Zeile f&uuml;r Zeile, ob es
+tr&auml;gt. Jedes Kreuz nennt die Abhilfe mit.</li>
+<li><b>MQTT:</b> Das Abo im MQTT-Gateway eintragen. Ohne diesen Eintrag kommt am
+Miniserver nichts an.</li>
+<li><b>Einbindung in Loxone:</b> Schritt f&uuml;r Schritt, mit vollst&auml;ndiger
+Baustein-Liste zum Nachbauen.</li>
+</ol>
+
+<h3>Die Schreibbremse</h3>
+<p>Jeder Schreibbefehl landet bei manchen Ger&auml;ten im Flash-Speicher. Die
+offizielle Home-Assistant-Integration merkt zur Ace 1500 ausdr&uuml;cklich an,
+ein ungebremster Regelkreis w&uuml;rde deren Schreibfestigkeit binnen Monaten
+aufbrauchen. Dieses Plugin l&auml;sst deshalb h&ouml;chstens einen Befehl je
+30 Sekunden durch und rastert Sollwerte auf 50 W. <b>Der Sendetakt in Loxone
+muss dazu passen</b> &mdash; sonst weist der Dienst jeden zweiten Befehl ab.</p>
+
+<h3>Kein Watchdog</h3>
+<p>Anders als etwa beim Marstek-Speicher stoppt Zendure nicht von selbst, wenn
+Loxone schweigt. Ein gesetzter Sollwert bleibt stehen. Wer das nicht will,
+l&auml;sst Loxone vor dem geplanten Herunterfahren einmal
+<span class="sm-mono">aktion=aus</span> senden.</p>
+
+<h3>Was ungepr&uuml;ft ist</h3>
+<p>Dieses Plugin wurde ohne Zendure-Ger&auml;t gebaut. Die Eigenschaftsnamen,
+die Befehlsformen und die Einheiten von Temperatur und Zellspannung konnten
+deshalb nicht am lebenden System nachgemessen werden. Bleibt ein Wert leer, ist
+das eher ein anders benanntes Feld als eine St&ouml;rung: der Knopf
+<i>Rohdaten als JSON ansehen</i> im Reiter Test zeigt, wie die Felder bei Ihnen
+wirklich heissen.</p>
+
+<h3>Grundlage</h3>
+<p>Alle Protokollangaben stammen aus der offiziellen Home-Assistant-Integration
+von Zendure (Zendure/Zendure-HA, MIT-Lizenz).</p>
