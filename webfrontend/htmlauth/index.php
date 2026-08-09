@@ -42,10 +42,24 @@ if ($zd_p['home'] !== '' && is_file($zd_p['home'] . '/libs/phplib/loxberry_syste
     require_once $zd_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
-/* Aktiver Reiter. Wer einen Reiter hinzufuegt, muss diese Positivliste
- * mitziehen - sonst springt die Seite nach jedem Absenden zurueck auf
- * Einstellungen, obwohl der Reiter sichtbar und anklickbar ist. */
-$zd_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+/* Die Reiter, an EINER Stelle.
+ *
+ * Bis 0.9.0 stand die Liste dreimal da: als Positivliste in diesem regulaeren
+ * Ausdruck, als Leiste im Rumpf und als id an den Bereichen. Wer einen Reiter
+ * ergaenzt und eine der drei Stellen vergisst, bekommt keinen Fehler, sondern
+ * einen Reiter, der sich anklicken laesst und nach jedem Absenden auf
+ * Einstellungen zurueckspringt. Jetzt entstehen Leiste und Pruefung aus
+ * diesem Feld - vergessen kann man nichts mehr. */
+$zd_reiter = array(
+    'settings' => 'REITER.EINSTELLUNGEN',
+    'mqtt'     => null,                    // Eigenname, wird nicht uebersetzt
+    'loxone'   => 'REITER.LOXONE',
+    'test'     => 'REITER.TEST',
+    'log'      => 'REITER.LOG',
+);
+$zd_muster = '/^tab-(' . implode('|', array_map(function ($k) {
+    return preg_quote($k, '/');
+}, array_keys($zd_reiter))) . ')$/';
 $zd_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($zd_muster, (string) $_POST['activetab'])) {
     $zd_tab = (string) $_POST['activetab'];
@@ -264,12 +278,8 @@ $zd_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
     ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
     : (gethostname() ?: 'loxberry');
 $zd_basis = 'http://' . $zd_host . '/plugins/' . $zd_p['plugin'] . '/index.php';
-$zd_logzeilen = array();
-if (is_file($zd_p['log'])) {
-    $zd_logzeilen = array_slice(
-        array_reverse(file($zd_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
-        0, 400);
-}
+// Nur das Ende lesen, nicht die ganze Datei - siehe zd_log_ende().
+$zd_logzeilen = zd_log_ende($zd_p['log'], 400);
 
 $zd_rahmen = class_exists('LBWeb', false);
 if ($zd_rahmen) {
@@ -396,18 +406,20 @@ if ($zd_rahmen) {
 <?php } ?>
 
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. So bleibt jeder
-     Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
-     faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
+     Reiter verlinkbar und Eingaben in anderen Reitern gehen nicht verloren.
+     Welcher Reiter offen ist, entscheidet der Server - bis 0.9.0 setzte erst
+     das Skript die Klasse sm-active, und weil .sm-seite auf display:none
+     steht, war die Seite ohne JavaScript vollstaendig leer. Der Kommentar an
+     dieser Stelle behauptete das Gegenteil. -->
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= zd_e(zd_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= zd_e(zd_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= zd_e(zd_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= zd_e(zd_t('REITER.LOG')) ?></a>
+<?php foreach ($zd_reiter as $zd_k => $zd_schl): $zd_id = 'tab-' . $zd_k; ?>
+	<a class="sm-tab<?= $zd_tab === $zd_id ? ' sm-active' : '' ?>" data-ziel="<?= zd_e($zd_id) ?>"
+	   href="index.php?form=<?= zd_e($zd_k) ?>"><?= $zd_schl === null ? 'MQTT' : zd_e(zd_t($zd_schl)) ?></a>
+<?php endforeach; ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $zd_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <h2><?= zd_e(zd_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('EINST.DIENST_ERKLAERUNG') ?></p>
@@ -579,7 +591,7 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $zd_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= zd_e(zd_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$zd_mqtt['gefunden']) { ?>
@@ -628,7 +640,7 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $zd_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= zd_e(zd_t('LOX.H_TITEL')) ?></h2>
 <p><?= zd_t('LOX.EINLEITUNG') ?></p>
 
@@ -791,7 +803,7 @@ function zd_bausteine()
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $zd_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= zd_e(zd_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
@@ -877,7 +889,7 @@ function zd_bausteine()
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $zd_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= zd_e(zd_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {

@@ -1,0 +1,74 @@
+#!/bin/bash
+# Zendure SolarFlow - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft trotzdem weiter).
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt die Plugin-Ordner weg (config/, data/, log/, bin/) und
+# entfernt den Cron-Eintrag. Zwei Dinge bleiben sonst liegen:
+#
+#   1. config/plugins/<ordner>.backup.json
+#      Die Sicherung der Konfiguration liegt bewusst NEBEN dem Konfigordner,
+#      damit sie Update und Neuinstallation uebersteht (preupgrade.sh legt
+#      sie an). Beim Deinstallieren ist genau das falsch: darin steht das
+#      AKTIONSTOKEN, mit dem sich der Speicher ueber den unangemeldeten
+#      Endpunkt laden, entladen und begrenzen laesst - und, sofern
+#      eingetragen, die Zugangsdaten des MQTT-Brokers.
+#   2. Ein noch laufender Dienst. Er haelt eine MQTT-Verbindung offen und
+#      wuerde ins Leere weiterlaufen.
+#
+# Einen Arbeitsordner auf der Ramdisk gibt es nicht - dieses Plugin legt
+# alles unter data/plugins/<ordner> ab, und das raeumt LoxBerry selbst weg.
+#
+# ZUR PROZESSSUCHE: "pkill -f zendure_dienst.php" waere zu grob. Verglichen
+# wird argumentweise gegen den vollen Pfad.
+
+PDIR=$3
+[ -n "$PDIR" ] || PDIR="zendure"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+SKRIPT="$BASE/bin/plugins/$PDIR/zendure_dienst.php"
+BK="$BASE/config/plugins/$PDIR.backup.json"
+
+# ---- 1. Dienst beenden ----
+GEFUNDEN=0
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    [ -r "$D/cmdline" ] || continue
+    if tr '\0' '\n' < "$D/cmdline" 2>/dev/null | grep -qxF "$SKRIPT"; then
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5; do
+            kill -0 "$P" 2>/dev/null || break
+            sleep 1
+        done
+        kill -9 "$P" 2>/dev/null
+        GEFUNDEN=1
+        echo "<OK> Laufenden Dienst beendet (PID $P)."
+    fi
+done
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Dienst."
+
+# ---- 2. Sicherung mit dem Aktionstoken ----
+if [ -f "$BK" ]; then
+    # Vor dem Entfernen ueberschreiben: die Datei enthaelt ein Geheimnis.
+    SIZE=$(stat -c%s "$BK" 2>/dev/null || echo 0)
+    [ "$SIZE" -gt 0 ] && head -c "$SIZE" /dev/zero > "$BK" 2>/dev/null
+    rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
+    echo "<INFO> Aktionstoken und MQTT-Zugangsdaten sind damit vom LoxBerry fort."
+else
+    echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
+
+echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
+echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
+echo "<INFO> (Vorgabe: zendure/...). Zum Aufraeumen: LoxBerry -> System ->"
+echo "<INFO> MQTT Gateway."
+echo "<INFO> Der Speicher selbst bleibt unberuehrt und behaelt seine"
+echo "<INFO> zuletzt gesetzten Grenzen."
+exit 0

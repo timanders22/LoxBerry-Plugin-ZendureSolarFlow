@@ -281,7 +281,13 @@ function zd_horcher_starten(array $geraete)
     }
     // -F '%t\t%p': Thema, Tabulator, Nutzdaten. Die Nutzdaten sind JSON und
     // damit einzeilig; der Tabulator kann in Zendure-Themen nicht vorkommen.
-    $befehl = 'mosquitto_sub -i ' . escapeshellarg('loxberry-zendure-' . getmypid())
+    /* "exec" davor, damit KEIN Shell-Zwischenprozess stehen bleibt.
+     *
+     * proc_open() startet ueber /bin/sh -c. proc_terminate() trifft dann nur
+     * diese Shell; mosquitto_sub liefe als verwaistes Kind weiter und hinge
+     * weiter am Broker. Mit "exec" ersetzt mosquitto_sub die Shell - der
+     * Prozess, den proc_open verwaltet, IST dann der Horcher. */
+    $befehl = 'exec mosquitto_sub -i ' . escapeshellarg('loxberry-zendure-' . getmypid())
             . ' -q 0 -F ' . escapeshellarg('%t\t%p') . ' ' . implode(' ', $args);
     $rohre = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
     $proc = @proc_open($befehl, $rohre, $leitungen, null, array('HOME' => $heim, 'XDG_CONFIG_HOME' => $heim . '/.config'));
@@ -303,8 +309,24 @@ function zd_horcher_beenden()
     }
     @fclose($GLOBALS['zd_horcher']['aus']);
     @fclose($GLOBALS['zd_horcher']['fehler']);
-    @proc_terminate($GLOBALS['zd_horcher']['proc']);
-    @proc_close($GLOBALS['zd_horcher']['proc']);
+    $proc = $GLOBALS['zd_horcher']['proc'];
+    @proc_terminate($proc);            // SIGTERM
+    /* Kurz nachsehen, ob er wirklich geht, und sonst nachsetzen. Ohne das
+     * blieb ein haengender mosquitto_sub am Broker stehen; proc_close()
+     * wartet dann unbegrenzt auf ihn und der ganze Dienst steht mit. */
+    for ($i = 0; $i < 20; $i++) {
+        $st = @proc_get_status($proc);
+        if (!is_array($st) || !$st['running']) {
+            break;
+        }
+        usleep(100000);
+    }
+    $st = @proc_get_status($proc);
+    if (is_array($st) && $st['running']) {
+        @proc_terminate($proc, 9);     // SIGKILL
+        usleep(200000);
+    }
+    @proc_close($proc);
     $GLOBALS['zd_horcher'] = null;
 }
 
@@ -323,18 +345,54 @@ function zd_horcher_lesen(array $geraete)
         zd_horcher_beenden();
         return;
     }
+    /* Teilzeilen puffern.
+     *
+     * Die Leitung ist unblockiert. fgets() gibt dann zurueck, was gerade da
+     * ist - auch ein Stueck OHNE abschliessenden Zeilenumbruch. Nachgestellt
+     * mit einem Schreiber, der eine Zeile in zwei Stuecken liefert:
+     *
+     *   thema1 => {"a":1}            (ganz)
+     *   thema2 => {"b":              <- halbe Nutzlast, JSON kaputt
+     *   VERWORFEN: '2}'              <- der Rest, ohne Tabulator
+     *   thema3 => {"c":3}            (ganz)
+     *
+     * Die Meldung war also nicht bloss verspaetet, sondern verstuemmelt -
+     * und der Rest landete als eigene, unbrauchbare Zeile. Gesammelt wird
+     * jetzt so lange, bis ein echter Zeilenumbruch kommt. Der Rest bleibt
+     * bis zum naechsten Durchgang stehen. */
+    static $rest = '';
     $zaehler = 0;
-    while (($zeile = fgets($GLOBALS['zd_horcher']['aus'])) !== false && $zaehler < 500) {
-        $zaehler++;
-        $zeile = rtrim($zeile, "\r\n");
-        if ($zeile === '') {
+    while (($stueck = fgets($GLOBALS['zd_horcher']['aus'])) !== false && $zaehler < 500) {
+        $rest .= $stueck;
+        if (substr($rest, -1) !== "\n") {
+            /* Noch keine ganze Zeile. Eine Notbremse gegen eine Gegenstelle,
+             * die nie einen Umbruch schickt: eine Zendure-Nutzlast ist ein
+             * paar hundert Byte gross, 64 kB sind keine mehr. */
+            if (strlen($rest) > 65536) {
+                zd_log_gebremst('pipe_lang', 'Ueber 64 kB ohne Zeilenumbruch vom '
+                    . 'MQTT-Horcher - der Puffer wird verworfen.', 300);
+                $rest = '';
+            }
             continue;
         }
-        $teile = explode("\t", $zeile, 2);
-        if (count($teile) < 2) {
-            continue;
+        /* Es koennen mehrere ganze Zeilen auf einmal angekommen sein - und
+         * das letzte Stueck kann wieder ein Anfang sein, wenn der Puffer
+         * mitten in der naechsten Zeile endet. explode liefert dann als
+         * letztes Element den Rest; er wandert zurueck in $rest. */
+        $zeilen = explode("\n", $rest);
+        $rest = array_pop($zeilen);
+        foreach ($zeilen as $zeile) {
+            $zaehler++;
+            $zeile = rtrim($zeile, "\r\n");
+            if ($zeile === '') {
+                continue;
+            }
+            $teile = explode("\t", $zeile, 2);
+            if (count($teile) < 2) {
+                continue;
+            }
+            zd_mqtt_nachricht($geraete, $teile[0], $teile[1]);
         }
-        zd_mqtt_nachricht($geraete, $teile[0], $teile[1]);
     }
 }
 
@@ -428,6 +486,29 @@ function zd_zustand_mischen($nr, array $payload)
             }
             foreach ($pack as $k => $v) {
                 $z['packs'][$sn][$k] = $v;
+            }
+            // Wann wurde dieser Akkupack zuletzt gemeldet?
+            $z['packs'][$sn]['_gesehen'] = time();
+        }
+        /* Akkupacks, die sich lange nicht mehr gemeldet haben, verfallen.
+         *
+         * Bis 0.9.0 blieb jede einmal gesehene Seriennummer fuer immer im
+         * Zustand stehen. Wer einen Akku ausbaut oder tauscht, haette ihn
+         * in der Oberflaeche und in Loxone weiter aufgefuehrt bekommen -
+         * mit dem Ladestand, den er beim Ausbau hatte. Ein Wert, der sich
+         * nie mehr aendert und trotzdem wie eine Messung aussieht, ist
+         * schlimmer als gar keiner.
+         *
+         * Sechs Stunden, nicht sechs Minuten: ein Akkupack meldet sich
+         * nicht in jedem Telegramm, und ein Speicher, der ueber Nacht
+         * ruht, soll morgens nicht als verschwunden gelten. */
+        $grenze = time() - 6 * 3600;
+        foreach ($z['packs'] as $sn2 => $p2) {
+            $gesehen = isset($p2['_gesehen']) ? (int) $p2['_gesehen'] : 0;
+            if ($gesehen > 0 && $gesehen < $grenze) {
+                unset($z['packs'][$sn2]);
+                zd_log('Akkupack ' . $sn2 . ' hat sich seit sechs Stunden nicht '
+                     . 'gemeldet und wird nicht mehr aufgefuehrt.');
             }
         }
         $z['ts'] = time();

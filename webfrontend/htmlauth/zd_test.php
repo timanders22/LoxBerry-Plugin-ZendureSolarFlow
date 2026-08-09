@@ -102,6 +102,9 @@ function zd_selbsttest_ausgabe()
 function zd_test_aktion($aktion)
 {
     $nr = isset($_POST['test_geraet']) ? (string) $_POST['test_geraet'] : '1';
+    // Als Ganzzahl weitergeben: "01" besteht die Pruefung, der Dienst
+    // vergleicht aber mit Zahlen. Ohne den Guss faende er das Geraet nicht.
+    $nr = (string) (int) $nr;
     if (!preg_match('/^[0-9]{1,2}$/', $nr)) {
         return array(0, zd_t('TEST.M_GERAET_UNGUELTIG'));
     }

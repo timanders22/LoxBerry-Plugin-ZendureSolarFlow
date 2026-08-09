@@ -1,0 +1,14 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - und zwar als
+# root, waehrend der Plugin-Installation.
+#
+# WARUM DAS HIER STEHT UND NICHT IN postinstall.sh:
+# postinstall.sh laeuft als Benutzer loxberry. Ein "apt-get install" dort
+# scheitert mangels Rechten - immer, still, und mit einem Hinweistext, den
+# man leicht ueberliest. Diese Liste ist der vorgesehene Weg.
+#
+# mosquitto-clients liefert mosquitto_sub und mosquitto_pub. Gebraucht werden
+# sie ausschliesslich fuer die aelteren Zendure-Geraete (Hub 1200, Hub 2000,
+# Hyper 2000, Ace 1500, AIO 2400), die ueber MQTT sprechen. Wer nur neuere
+# Geraete mit HTTP-Schnittstelle betreibt, braucht sie nicht - deshalb bricht
+# das Plugin ohne sie auch nicht ab, sondern meldet es im Reiter Test.
+mosquitto-clients

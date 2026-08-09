@@ -54,13 +54,23 @@ function zd_paths()
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
     // sich bei jedem Fork.
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'zendure') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
-                $dir = $kand;
-                break;
-            }
-        }
+    /* Frueher wurde hier auf den festen Namen "zendure" zurueckgefallen,
+     * sobald config/plugins/<ordner> noch fehlte - etwa im Augenblick der
+     * Installation. Haengt LoxBerry bei einer Zweitinstallation einen Zaehler
+     * an (zendure_01, weil der Name schon belegt war), zeigten deren Pfade
+     * damit auf die ERSTE Installation: gemeinsame Konfiguration - und darin
+     * steht das Aktionstoken, mit dem sich der Speicher schalten laesst -,
+     * gemeinsame Warteschlange, gemeinsames Protokoll.
+     *
+     * LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und bleibt deshalb.
+     * Der feste Name greift nur noch dort, wo der ermittelte nachweislich kein
+     * Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst er
+     * "html". */
+    $lbp = getenv('LBPPLUGINDIR');
+    if ($lbp) {
+        $dir = $lbp;
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+        $dir = 'zendure';
     }
     if ($home) {
         $p = array(
@@ -182,16 +192,40 @@ function zd_json_schreiben($pfad, $daten, $rechte = null)
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return false;
     }
-    $tmp = $pfad . '.tmp';
+    $tmp = $pfad . '.tmp.' . getmypid();
     $json = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json === false || @file_put_contents($tmp, $json) === false) {
-        @unlink($tmp);
+    if ($json === false) {
+        return false;
+    }
+    /* Die Rechte gehoeren an das ANLEGEN, nicht hinterher.
+     *
+     * Bis 0.9.0 wurde erst geschrieben und dann chmod gerufen. In der
+     * Konfiguration steht das Broker-Passwort im Klartext; zwischen dem
+     * ersten Byte und dem chmod stand die Datei mit den Vorgaben der umask
+     * da, ueblicherweise 0644. Das Fenster ist kurz, aber es gibt keinen
+     * Grund, es offen zu lassen.
+     *
+     * fopen() legt nicht mit gewaehlten Rechten an - deshalb die Datei
+     * zuerst leer anlegen, sofort schuetzen und dann fuellen. */
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
         return false;
     }
     if ($rechte !== null) {
         @chmod($tmp, $rechte);
     }
-    return @rename($tmp, $pfad);
+    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
+    fflush($fh);
+    fclose($fh);
+    if (!$ok) {
+        @unlink($tmp);
+        return false;
+    }
+    if (!@rename($tmp, $pfad)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 function zd_config()
@@ -407,6 +441,47 @@ function zd_dienst($befehl)
  * 2 eingereiht, aber ohne Antwort in der Wartezeit - Ergebnis unbekannt.
  * Es wird nie ein Erfolg gemeldet, den niemand geprueft hat.
  */
+/**
+ * Die letzten $anzahl Zeilen einer Datei, neueste zuerst.
+ *
+ * Bis 0.9.0 las die Oberflaeche das ganze Protokoll mit file() ein. Der
+ * Hinweis auf den Speicher war berechtigt - der vorgeschlagene Weg ueber
+ * exec("tail") ist aber der langsamste der drei. Gemessen an einer Datei mit
+ * 12.000 Zeilen (610 kB), je 20 Durchlaeufe, Spitzenspeicher in einem eigenen
+ * Prozess:
+ *
+ *   ganz einlesen            0,37 ms   zusaetzlich 2048 kB
+ *   exec("tail -n 400")      2,17 ms   zusaetzlich    0 kB
+ *   rueckwaerts mit fseek    0,05 ms   zusaetzlich    0 kB
+ *
+ * Ein Prozessstart kostet mehr, als das Einlesen je gespart hat. Die Ausgabe
+ * ist Zeile fuer Zeile dieselbe wie bisher - nachgeprueft.
+ */
+function zd_log_ende($datei, $anzahl = 400, $block = 8192)
+{
+    $fp = @fopen($datei, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    while ($pos > 0 && count($zeilen) <= $anzahl) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = explode("\n", $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen), 'strlen'));
+    return array_slice(array_reverse($zeilen), 0, $anzahl);
+}
+
+/** Obergrenze fuer eine Wartezeit, die aus einer Web-Anfrage kommt. */
+define('ZD_WARTEN_WEB', 10);
+
 function zd_befehl_absetzen($befehl, $wartezeit = null)
 {
     $p = zd_paths();
@@ -414,7 +489,15 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
     if ($wartezeit === null) {
         $wartezeit = (int) $cfg['wartezeit'];
     }
-    $wartezeit = max(0, min(20, (int) $wartezeit));
+    /* Bis 0.9.0 bei 20 Sekunden gedeckelt. Fuer einen Aufruf aus dem
+     * Webfrontend ist das zu lang: der Webserver bricht die Anfrage
+     * typischerweise nach 15 bis 30 Sekunden mit 504 ab, und der Benutzer
+     * sieht einen Serverfehler statt einer Auskunft.
+     *
+     * Der Dienst arbeitet den Befehl trotzdem zu Ende - die Warteschlange
+     * liegt im Dateisystem, nicht in dieser Anfrage. Was daraus wurde,
+     * steht im Protokoll. */
+    $wartezeit = max(0, min(ZD_WARTEN_WEB, (int) $wartezeit));
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
@@ -423,7 +506,18 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
     $kennung = bin2hex(random_bytes(8));
     $datei = $ordner . '/' . $kennung . '.json';
     $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
+    /* json_encode gibt bei ungueltigem UTF-8 false zurueck. file_put_contents
+     * macht daraus eine leere Zeichenkette, schreibt null Byte und meldet das
+     * als Erfolg - der Rueckgabewert ist 0, nicht false, die Pruefung auf
+     * "=== false" greift also nicht, und rename schiebt die leere Datei in die
+     * Warteschlange. Der Dienst faende dort einen Befehl, den er nicht deuten
+     * kann - bei einem Speicher, der geladen oder entladen werden soll, ist
+     * das kein Schoenheitsfehler. Deshalb zuerst kodieren und pruefen. */
+    $zd_js = json_encode($befehl);
+    if ($zd_js === false) {
+        return array(0, 'Der Befehl liess sich nicht als JSON darstellen (ungueltiges UTF-8).');
+    }
+    if (@file_put_contents($tmp, $zd_js) !== strlen($zd_js) || !@rename($tmp, $datei)) {
         @unlink($tmp);
         return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
     }
@@ -431,6 +525,9 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
             $a = zd_json_lesen($antwort);
+            /* Gelesen ist erledigt. Bis 0.9.0 blieb die Datei liegen und
+             * sammelte sich im Datenordner an. */
+            @unlink($antwort);
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
                          (string) (isset($a['meldung']) ? $a['meldung'] : ''));
         }

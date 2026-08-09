@@ -2,4 +2,8 @@
 # Zendure SolarFlow - Waechter, minuetlich.
 # Startet den Dienst neu, wenn er laufen soll, aber nicht laeuft.
 # REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad des Plugins ersetzt.
-"REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+# Ausdruecklich ueber die Shell aufrufen: geht bei einem misslungenen Update
+# das Ausfuehrungsrecht an dienst.sh verloren, schluege der unmittelbare
+# Aufruf lautlos fehl - die Ausgabe geht nach /dev/null, und niemand
+# bemerkte, dass der Waechter nicht mehr laeuft.
+/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1

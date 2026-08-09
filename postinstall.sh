@@ -60,17 +60,24 @@ echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 if command -v mosquitto_sub >/dev/null 2>&1 && command -v mosquitto_pub >/dev/null 2>&1; then
     echo "<OK> mosquitto-Werkzeuge vorhanden: $(mosquitto_sub --help 2>&1 | head -1)"
 else
-    echo "<INFO> mosquitto_sub/mosquitto_pub fehlen - versuche sie nachzuinstallieren ..."
-    if apt-get install -y mosquitto-clients >/dev/null 2>&1 \
-       && command -v mosquitto_sub >/dev/null 2>&1; then
-        echo "<OK> mosquitto-clients installiert."
-    else
-        echo "<INFO> mosquitto-clients liessen sich nicht installieren."
-        echo "<INFO> Das ist NUR fuer die aelteren Geraete ein Problem (Hub 1200, Hub 2000,"
-        echo "<INFO> Hyper 2000, Ace 1500, AIO 2400) - sie sprechen ausschliesslich MQTT."
-        echo "<INFO> Geraete mit lokaler HTTP-Schnittstelle (SolarFlow 800 und neuer)"
-        echo "<INFO> laufen auch ohne. Nachholen mit: sudo apt install mosquitto-clients"
-    fi
+    # Hier wird NICHT mehr nachinstalliert.
+    #
+    # Bis 0.9.0 stand an dieser Stelle ein "apt-get install -y
+    # mosquitto-clients". Das kann nicht gelingen: postinstall.sh laeuft als
+    # Benutzer loxberry, apt braucht root. Der Aufruf scheiterte also immer -
+    # und weil seine Ausgabe nach /dev/null ging, sah man nur den
+    # Ersatztext dahinter.
+    #
+    # Das Paket steht jetzt in dpkg/apt; LoxBerry installiert es waehrend
+    # der Plugin-Installation mit den noetigen Rechten. Fehlt es hier
+    # trotzdem, ist bei der Paketinstallation etwas schiefgegangen - und
+    # genau das gehoert gemeldet, statt es zu verdecken.
+    echo "<INFO> mosquitto_sub/mosquitto_pub fehlen - obwohl mosquitto-clients in"
+    echo "<INFO> dpkg/apt steht. Bei der Paketinstallation ist etwas schiefgegangen."
+    echo "<INFO> Das ist NUR fuer die aelteren Geraete ein Problem (Hub 1200, Hub 2000,"
+    echo "<INFO> Hyper 2000, Ace 1500, AIO 2400) - sie sprechen ausschliesslich MQTT."
+    echo "<INFO> Geraete mit lokaler HTTP-Schnittstelle (SolarFlow 800 und neuer)"
+    echo "<INFO> laufen auch ohne. Nachholen mit: sudo apt install mosquitto-clients"
 fi
 
 chmod 755 "$PBIN/dienst.sh" 2>/dev/null

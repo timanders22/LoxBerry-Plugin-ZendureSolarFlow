@@ -26,7 +26,17 @@ laeuft() {
     [ -n "$P" ] || return 1
     kill -0 "$P" 2>/dev/null || return 1
     # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "zendure_dienst.php" "/proc/$P/cmdline" 2>/dev/null || return 1
+    # Argumentweise pruefen, nicht die ganze Befehlszeile durchsuchen.
+    #
+    # /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein grep
+    # darueber traf auch einen Editor mit geoeffneter zendure_dienst.php,
+    # wenn die Prozessnummer wiederverwendet wurde. Geprueft werden jetzt
+    # zwei Dinge: das zweite Argument ist genau unser Skript, und das erste
+    # ist ein PHP - "nano <pfad>/zendure_dienst.php" fuehrt den Pfad sonst
+    # ebenfalls als zweites Argument.
+    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    [ "$(echo "$ARGS" | sed -n '2p')" = "$SKRIPT" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
     return 0
 }
 
