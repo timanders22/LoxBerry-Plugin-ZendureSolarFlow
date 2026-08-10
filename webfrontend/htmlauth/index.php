@@ -585,7 +585,7 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
 </div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 </div>
