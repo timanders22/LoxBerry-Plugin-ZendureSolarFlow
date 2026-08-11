@@ -36,11 +36,23 @@ chmod 700 "$PDATA/mosq" 2>/dev/null
 [ -f "$PCONFIG/zendure.json" ] || echo '{}' > "$PCONFIG/zendure.json"
 
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
+#
+# WARUM DIE MITGELIEFERTE config/zendure.json NUR "{}" ENTHALTEN DARF:
+# Der Installer kopiert config/* aus dem Archiv ueber config/plugins/<ordner>
+# (plugininstall.pl, Zeile 899: cp -r, ohne -n, bei Update wie bei
+# Erstinstallation). Bis 0.9.3 lag dort eine Datei mit 322 Byte
+# VORGABEWERTEN. Nach dem Ueberschreiben war die Konfiguration damit weder
+# leer noch "{}" - die Bedingung unten griff nie, und saemtliche
+# Einstellungen waren nach jedem Update fort. Ein Netz, das nicht ausloesen
+# kann, ist schlimmer als keines: es taeuscht Sicherheit vor.
+#
+# Wer die mitgelieferte Datei wieder mit Inhalt fuellt, macht genau diesen
+# Fehler erneut.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/zendure.json"
 if [ -f "$BK" ]; then
-    INHALT=$(cat "$CF" 2>/dev/null)
-    if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
+    INHALT=$(tr -d ' \t\n\r' < "$CF" 2>/dev/null)
+    if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] || [ -z "$INHALT" ]; then
         cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
     fi
 fi
@@ -88,4 +100,40 @@ chmod 700 "$PDATA/mosq" 2>/dev/null
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Geraete eintragen und den"
 echo "<INFO> Dienst im Reiter Einstellungen starten."
+
+# ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
+# Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
+# wirklich verloren ist. Erkannt wird das an dreierlei: sie fehlt, sie ist
+# leer, oder sie ist zeichengenau die mitgelieferte Vorgabe (Pruefsumme
+# unten). Der letzte Fall ist der eigentliche: genau so sieht die Datei nach
+# dem Kopierschritt des Installers aus.
+#
+# Eine gueltige Konfiguration wird NIE ueberschrieben. Eine Sicherung, die
+# echte Einstellungen ersetzt, waere schlimmer als gar keine.
+NETZ_BASE="${5:-$LBHOMEDIR}"
+NETZ_PDIR="${3:-zendure}"
+NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+netz_zurueck() {
+    datei=$1; soll=$2
+    ziel="$NETZ_CFG/$datei"
+    zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
+    [ -f "$zweit" ] || return 0
+    verloren=0
+    if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
+        verloren=1
+    else
+        ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
+        [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
+    fi
+    if [ "$verloren" = "1" ]; then
+        if cp -p "$zweit" "$ziel" 2>/dev/null; then
+            echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
+        else
+            echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
+            echo "<WARNING> liegt unter $zweit und kann von Hand kopiert werden."
+        fi
+    fi
+}
+netz_zurueck "zendure.json" "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+
 exit 0

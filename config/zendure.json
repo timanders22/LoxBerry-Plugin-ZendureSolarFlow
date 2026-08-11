@@ -1,16 +1,1 @@
-{
-    "geraete": [],
-    "intervall": 15,
-    "mqtt_ein": 0,
-    "mqtt_topic": "zendure",
-    "broker_host": "",
-    "broker_port": 1883,
-    "broker_user": "",
-    "broker_pw": "",
-    "steuerung_ein": 0,
-    "schreibbremse": 30,
-    "schrittweite": 50,
-    "verlauf_tage": 8,
-    "aktionstoken": "",
-    "wartezeit": 6
-}
+{}
