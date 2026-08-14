@@ -165,7 +165,6 @@ if ($zd_post && isset($_POST['speichern'])) {
         'schrittweite'  => array(1, 500),
         'verlauf_tage'  => array(1, 90),
         'wartezeit'     => array(0, 20),
-        'broker_port'   => array(1, 65535),
     ) as $zd_feld => $zd_grenzen) {
         $zd_wert = isset($_POST[$zd_feld]) ? trim((string) $_POST[$zd_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $zd_wert)) {
@@ -181,29 +180,12 @@ if ($zd_post && isset($_POST['speichern'])) {
         $zd_cfg[$zd_feld] = $zd_zahl;
     }
 
-    $zd_cfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $zd_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
 
-    $zd_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['mqtt_topic']));
-    if ($zd_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $zd_topic)) {
-        $zd_fehler[] = zd_t('EINST.FEHLER_TOPIC');
-    } else {
-        $zd_cfg['mqtt_topic'] = trim($zd_topic, '/');
-    }
 
-    $zd_bh = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['broker_host']));
-    if ($zd_bh !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $zd_bh)) {
-        $zd_fehler[] = zd_t('EINST.FEHLER_BROKER');
-    } else {
-        $zd_cfg['broker_host'] = $zd_bh;
-    }
-    $zd_cfg['broker_user'] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['broker_user']));
-    // Leeres Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
-    // Passwort in der Konfiguration, ohne dass es jemand merkt.
-    $zd_bpw = isset($_POST['broker_pw']) ? (string) $_POST['broker_pw'] : '';
-    if ($zd_bpw !== '') {
-        $zd_cfg['broker_pw'] = $zd_bpw;
-    }
+    /* Broker und MQTT wohnen im Reiter MQTT (eigenes Formular, eigener
+     * Handler). $zd_cfg kommt aus zd_config(), die Werte ueberleben das
+     * Speichern der Einstellungen also unveraendert. */
 
     $zd_tu = isset($_POST['temp_umrechnung']) ? (string) $_POST['temp_umrechnung'] : 'roh';
     $zd_cfg['temp_umrechnung'] = in_array($zd_tu, array('roh', 'kelvin10', 'zehntel'), true) ? $zd_tu : 'roh';
@@ -216,6 +198,50 @@ if ($zd_post && isset($_POST['speichern'])) {
         }
     }
     $zd_tab = 'tab-settings';
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. */
+if ($zd_post && isset($_POST['save_mqtt'])) {
+    $zd_mcfg = zd_config();
+    $zd_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $zd_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($zd_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $zd_mtopic)) {
+        $zd_fehler[] = zd_t('EINST.FEHLER_TOPIC');
+    } else {
+        $zd_mcfg['mqtt_topic'] = trim($zd_mtopic, '/');
+    }
+    $zd_bp = isset($_POST['broker_port']) ? trim((string) $_POST['broker_port']) : '';
+    if (preg_match('/^[0-9]+$/', $zd_bp) && (int) $zd_bp >= 1 && (int) $zd_bp <= 65535) {
+        $zd_mcfg['broker_port'] = (int) $zd_bp;
+    } else {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_BEREICH'),
+            zd_t('EINST.L_BROKER_PORT'), 1, 65535);
+    }
+    $zd_bh = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_host']) ? $_POST['broker_host'] : '')));
+    if ($zd_bh !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $zd_bh)) {
+        $zd_fehler[] = zd_t('EINST.FEHLER_BROKER');
+    } else {
+        $zd_mcfg['broker_host'] = $zd_bh;
+    }
+    $zd_mcfg['broker_user'] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_user']) ? $_POST['broker_user'] : '')));
+    // Leeres Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
+    // Passwort in der Konfiguration, ohne dass es jemand merkt.
+    $zd_bpw = isset($_POST['broker_pw']) ? (string) $_POST['broker_pw'] : '';
+    if ($zd_bpw !== '') {
+        $zd_mcfg['broker_pw'] = $zd_bpw;
+    }
+    if (!$zd_fehler) {
+        if (zd_config_speichern($zd_mcfg)) {
+            $zd_meldungen[] = zd_t('EINST.GESPEICHERT');
+        }
+    }
+    $zd_tab = 'tab-mqtt';
 }
 
 /* ---------------- Dienst ---------------- */
@@ -552,6 +578,21 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
   <div class="sm-hilfe"><?= zd_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
+<?php /* Broker und MQTT standen hier bis zu dieser Fassung.
+         Beides wohnt jetzt vollstaendig im Reiter MQTT. */ ?>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+</div>
+
+<!-- ================= Reiter: MQTT ================= -->
+<div class="sm-seite<?= $zd_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?= zd_e(zd_t('EINST.H_BROKER')) ?></h2>
 <div class="sm-hilfe"><?= zd_t('EINST.BROKER_ERKLAERUNG') ?></div>
 <div class="sm-feld">
@@ -571,7 +612,6 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
   <input data-role="none" type="password" id="broker_pw" name="broker_pw" value="" placeholder="<?= $zd_cfg['broker_pw'] !== '' ? zd_e(sprintf(zd_t('EINST.PW_GESETZT'), strlen((string) $zd_cfg['broker_pw']))) : zd_e(zd_t('EINST.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= zd_t('EINST.H_BROKER_PW') ?></div>
 </div>
-
 <h2>MQTT</h2>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
@@ -583,15 +623,11 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
   <label for="mqtt_topic"><?= zd_e(zd_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= zd_e($zd_cfg['mqtt_topic']) ?>" placeholder="zendure">
 </div>
-
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
-</div>
-
-<!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite<?= $zd_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= zd_e(zd_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$zd_mqtt['gefunden']) { ?>
