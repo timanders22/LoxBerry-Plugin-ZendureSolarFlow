@@ -14,8 +14,14 @@ if [ -f "$PID" ]; then
     rm -f "$PID"
     echo "<INFO> Laufender Dienst angehalten."
 fi
-# Herrenlose Horcher aufraeumen, damit sie sich nicht doppeln
-pkill -f "mosquitto_sub .*zendure" 2>/dev/null || true
+# Herrenlose Horcher aufraeumen, damit sie sich nicht doppeln.
+#
+# Das Muster traegt den ORDNERNAMEN. Bis 0.9.8 stand hier das feste Wort
+# "zendure", und die Kennung jedes Horchers lautete "loxberry-zendure-<pid>" -
+# bei JEDER Installation. Ein Update von "zendure_01" erschlug damit den
+# Horcher der Installation "zendure" gleich mit, und die las danach bis zu
+# ihrem naechsten Dienstneustart kein MQTT mehr.
+pkill -f "mosquitto_sub .*loxberry-$PFOLDER-" 2>/dev/null || true
 
 CF="$BASE/config/plugins/$PFOLDER/zendure.json"
 [ -f "$CF" ] && cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json"

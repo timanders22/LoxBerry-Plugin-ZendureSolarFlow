@@ -22,16 +22,40 @@ fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
+# NEBEN dem Datenordner: plugininstall.pl ruft beim Upgrade purge_installation
+# und entfernt data/plugins/<ordner>/ vollstaendig, ohne Bedingung. Hier liegen
+# deshalb der SOC-Verlauf und der Sollmerker - alles, was ein Update
+# ueberstehen soll. Der Punkt im Namen haelt den Ordner aus dem
+# "rm -rf <ordner>/" heraus.
+PBESTAND="$BASE/data/plugins/$PFOLDER.bestand"
 PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 
-mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PDATA/verlauf" "$PDATA/mosq" "$PLOG" "$PCONFIG" || {
+mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PDATA/mosq" \
+         "$PBESTAND/verlauf" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
-chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+chmod 755 "$PDATA" "$PBESTAND" "$PLOG" "$PCONFIG" 2>/dev/null
 # In diesem Ordner liegen die Broker-Zugangsdaten fuer mosquitto_sub/pub.
 chmod 700 "$PDATA/mosq" 2>/dev/null
+
+# Aus einer Installation vor 0.9.9 lagen Verlauf und Sollmerker noch IM
+# Datenordner. Beim ersten Update nach 0.9.9 ist der Datenordner bereits
+# abgeraeumt - dann gibt es hier nichts mehr zu holen, und das ist der
+# Normalfall. Wer 0.9.9 dagegen ueber eine noch unversehrte Installation
+# legt (Neuinstallation ohne purge), soll seine Kurve behalten.
+if [ -d "$PDATA/verlauf" ]; then
+    for F in "$PDATA/verlauf/"geraet*_*.csv; do
+        [ -f "$F" ] || continue
+        [ -f "$PBESTAND/verlauf/$(basename "$F")" ] || cp -p "$F" "$PBESTAND/verlauf/" 2>/dev/null
+    done
+    rm -rf "$PDATA/verlauf" 2>/dev/null
+    echo "<INFO> Bisheriger SOC-Verlauf nach $PFOLDER.bestand uebernommen."
+fi
+if [ -f "$PDATA/soll_laufen" ] && [ ! -f "$PBESTAND/soll_laufen" ]; then
+    mv "$PDATA/soll_laufen" "$PBESTAND/soll_laufen" 2>/dev/null
+fi
 
 [ -f "$PCONFIG/zendure.json" ] || echo '{}' > "$PCONFIG/zendure.json"
 
@@ -94,7 +118,7 @@ fi
 
 chmod 755 "$PBIN/dienst.sh" 2>/dev/null
 chmod 755 "$PBIN/zendure_dienst.php" 2>/dev/null
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PBESTAND" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 700 "$PDATA/mosq" 2>/dev/null
 
 echo "<OK> Installation abgeschlossen."

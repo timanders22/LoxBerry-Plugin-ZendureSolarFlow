@@ -1,0 +1,77 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Zendure SolarFlow - Healthcheck
+ *
+ * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei dieses
+ * Namens im bin/-Ordner des Plugins auf, einmal mit "title", einmal mit
+ * "check". Antwort ist JSON.
+ *
+ *   healthcheck title   -> {"title":"..."}
+ *   healthcheck check   -> {"desc":"...","status":5,"result":"...","logfile":"..."}
+ *
+ * Statuswerte nach der LoxBerry-Skala:
+ *   leer/0 unbekannt, 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis
+ *
+ * WARUM DAS ZAEHLT: bis 0.9.11 stand der Klartext ueber eine Stoerung
+ * ausschliesslich auf der Plugin-Seite. Wer sie nicht oeffnet, sieht ein
+ * unauffaelliges Symbol - genau der Anwender, bei dem die Einrichtung
+ * haengt, hatte keinen Weg, es zu erfahren.
+ *
+ * NEBENEFFEKT OHNE ZUSATZARBEIT: healthcheck.pl veroeffentlicht das Ergebnis
+ * zusaetzlich retained nach MQTT unter <rechnername>/healthcheck/<titel>.
+ *
+ * Der Befund kommt aus zd_befund() - derselben Funktion, die auch die
+ * Oberflaeche und der Meldebereich benutzen. Drei Stellen, die dasselbe
+ * verschieden sagen, sind zwei zu viel.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+date_default_timezone_set(@date_default_timezone_get() ?: 'Europe/Berlin');
+
+/* Bibliothek finden - genau wie in zendure_dienst.php, aus dem eigenen
+ * Ablageort abgeleitet und ohne festen Systempfad. */
+$zd_self = dirname(__FILE__);
+$zd_name = basename($zd_self);
+$zd_home = dirname(dirname(dirname($zd_self)));
+$zd_gefunden = false;
+foreach (array(
+    $zd_home . '/webfrontend/html/plugins/' . $zd_name . '/zd_lib.php',
+    $zd_home . '/webfrontend/htmlauth/plugins/' . $zd_name . '/zd_lib.php',
+    dirname($zd_self) . '/webfrontend/html/zd_lib.php',
+    dirname($zd_self) . '/../webfrontend/html/zd_lib.php',
+) as $zd_kandidat) {
+    if (is_file($zd_kandidat)) {
+        require_once $zd_kandidat;
+        $zd_gefunden = true;
+        break;
+    }
+}
+
+$zd_argv = isset($argv) ? $argv : array();
+$zd_was = isset($zd_argv[1]) ? (string) $zd_argv[1] : 'check';
+
+if (!$zd_gefunden) {
+    /* Ohne Bibliothek laesst sich nichts feststellen - und "unbekannt" ist
+     * die richtige Antwort dafuer, nicht "in Ordnung". */
+    echo json_encode($zd_was === 'title'
+        ? array('title' => 'Zendure SolarFlow')
+        : array('desc' => 'Zendure SolarFlow', 'status' => 3,
+                'result' => 'zd_lib.php nicht gefunden - Plugin neu installieren.'));
+    exit(0);
+}
+
+if ($zd_was === 'title') {
+    echo json_encode(array('title' => 'Zendure SolarFlow'));
+    exit(0);
+}
+
+$zd_b = zd_befund();
+$zd_p = zd_paths();
+echo json_encode(array(
+    'desc'    => 'Zendure SolarFlow',
+    'status'  => (int) $zd_b['status'],
+    'result'  => (string) $zd_b['text'],
+    'logfile' => $zd_p['log'],
+), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+exit(0);

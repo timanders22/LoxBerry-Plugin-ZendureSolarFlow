@@ -60,15 +60,43 @@ for D in /proc/[0-9]*; do
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Dienst."
 
-# ---- 2. Sicherung mit dem Aktionstoken ----
-if [ -f "$BK" ]; then
+# ---- 2. Sicherungen mit dem Aktionstoken ----
+#
+# ES SIND ZWEI, NICHT EINE. preupgrade.sh legt seit 0.9.4 zusaetzlich eine
+# Zweitschrift <ordner>.backup.zendure.json an - dieselben Geheimnisse,
+# anderer Name. Bis 0.9.8 entfernte dieses Skript nur die erste und meldete
+# danach trotzdem, Aktionstoken und Zugangsdaten seien fort. Eine
+# unzutreffende Sicherheitszusage ist schlimmer als gar keine, weil sie
+# weitergegeben wird.
+GEFUNDEN_BK=0
+for F in "$BK" "$BASE/config/plugins/$PDIR.backup.zendure.json"; do
+    [ -f "$F" ] || continue
     # Vor dem Entfernen ueberschreiben: die Datei enthaelt ein Geheimnis.
-    SIZE=$(stat -c%s "$BK" 2>/dev/null || echo 0)
-    [ "$SIZE" -gt 0 ] && head -c "$SIZE" /dev/zero > "$BK" 2>/dev/null
-    rm -f "$BK" && echo "<OK> Sicherung der Konfiguration entfernt: $PDIR.backup.json"
+    # Das ERSCHWERT das Wiederfinden - es loescht nicht sicher. Auf
+    # Speicherkarte und eMMC entscheidet der Flash-Controller selbst, wohin
+    # geschrieben wird; der alte Block kann physisch stehen bleiben.
+    SIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
+    [ "$SIZE" -gt 0 ] && head -c "$SIZE" /dev/zero > "$F" 2>/dev/null
+    rm -f "$F" && echo "<OK> Sicherung entfernt: $(basename "$F")"
+    GEFUNDEN_BK=1
+done
+if [ "$GEFUNDEN_BK" -eq 1 ]; then
     echo "<INFO> Aktionstoken und MQTT-Zugangsdaten sind damit vom LoxBerry fort."
 else
     echo "<INFO> Keine Sicherung ausserhalb des Plugin-Ordners vorhanden."
+fi
+
+# ---- 3. Bestandsordner ----
+#
+# Er liegt bewusst NEBEN data/plugins/<ordner>, damit Verlauf und Sollmerker
+# ein Update ueberstehen - genau deshalb raeumt LoxBerry ihn nicht mit weg.
+# Beim Deinstallieren ist das falsch, also hier.
+PBESTAND="$BASE/data/plugins/$PDIR.bestand"
+if [ -d "$PBESTAND" ]; then
+    N=$(find "$PBESTAND/verlauf" -name 'geraet*_*.csv' 2>/dev/null | wc -l)
+    rm -rf "$PBESTAND" && echo "<OK> Bestandsordner entfernt ($N Verlaufsdatei(en)): $PDIR.bestand"
+else
+    echo "<INFO> Kein Bestandsordner vorhanden."
 fi
 
 echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."

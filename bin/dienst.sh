@@ -21,11 +21,24 @@ PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
-SOLL="$PDATA/soll_laufen"
+# NEBEN dem Datenordner - plugininstall.pl raeumt data/plugins/<ordner>/ bei
+# JEDEM Update vollstaendig ab. Bis 0.9.8 lag der Sollmerker darin: nach einem
+# Update war er fort, und der Waechter startete den Dienst nie wieder. Der
+# Punkt im Namen haelt den Ordner aus dem "rm -rf <ordner>/" heraus.
+PBESTAND="$LBHOMEDIR/data/plugins/$PNAME.bestand"
+SOLL="$PBESTAND/soll_laufen"
 LOGDATEI="$PLOG/zendure.log"
 SKRIPT="$SELF/zendure_dienst.php"
+# Ein Sperrmerker gegen zwei gleichzeitige Laeufe. Ohne ihn koennen der
+# minuetliche Waechter und ein Klick in der Oberflaeche einander ueberholen.
+SPERRE="$PBESTAND/dienst.sperre"
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+mkdir -p "$PDATA" "$PLOG" "$PBESTAND" 2>/dev/null
+
+# Sollmerker aus einer Installation vor 0.9.9 einmalig hinueberziehen.
+if [ -f "$PDATA/soll_laufen" ] && [ ! -f "$SOLL" ]; then
+    mv "$PDATA/soll_laufen" "$SOLL" 2>/dev/null || touch "$SOLL"
+fi
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -67,15 +80,50 @@ starten() {
     touch "$SOLL"
     # Ausgabe geht in die Logdatei. Das PHP-Skript protokolliert deshalb NICHT
     # zusaetzlich nach stdout - sonst stuende jede Zeile doppelt darin.
-    nohup php "$SKRIPT" >> "$LOGDATEI" 2>&1 &
-    echo $! > "$PID"
-    sleep 1
-    if laeuft; then
-        echo "gestartet (PID $(cat "$PID"))"
-        return 0
+    # 9>&- schliesst den Sperr-Dateizeiger fuer den Dienst. Ohne das haelt er
+    # die Sperre, solange er laeuft, und jedes spaetere stop/restart wartet
+    # vergeblich - siehe den Block am Ende dieser Datei.
+    nohup php "$SKRIPT" >> "$LOGDATEI" 2>&1 9>&- &
+    NEUPID=$!
+    echo "$NEUPID" > "$PID"
+
+    # Bis zu zehn Sekunden warten, nicht genau eine.
+    #
+    # Bis 0.9.8 stand hier ein festes "sleep 1". Braucht der Start laenger -
+    # auf einem beschaeftigten Raspberry Pi keine Seltenheit -, war der
+    # Befund negativ, die PID-Datei wurde geloescht UND der eben gestartete
+    # Prozess lief weiter. Der Waechter sah eine Minute spaeter "laeuft
+    # nicht" und legte den zweiten nach, dann den dritten. Gemessen an
+    # echten Prozessen (Pruefstand p7_dienst.sh): nach einem Waechterlauf
+    # liefen zwei Dienste auf derselben Warteschlange.
+    #
+    # Frueh abbrechen, sobald es steht: der Regelfall bleibt schnell.
+    I=0
+    while [ "$I" -lt 20 ]; do
+        if laeuft; then
+            echo "gestartet (PID $(cat "$PID"))"
+            return 0
+        fi
+        # Ist der Prozess schon wieder fort, hat er sich selbst beendet -
+        # dann bringt weiteres Warten nichts.
+        kill -0 "$NEUPID" 2>/dev/null || break
+        sleep 0.5
+        I=$((I+1))
+    done
+
+    # Es steht nicht. Erst aufraeumen, DANN melden - ein herrenloser Prozess
+    # ohne PID-Datei ist schlimmer als ein sauberer Fehlschlag.
+    if kill -0 "$NEUPID" 2>/dev/null; then
+        kill "$NEUPID" 2>/dev/null
+        sleep 1
+        kill -9 "$NEUPID" 2>/dev/null
     fi
-    echo "FEHLER: Start fehlgeschlagen - siehe $LOGDATEI"
     rm -f "$PID"
+    # Und der Sollmerker geht mit. Bliebe er liegen, liefe der Waechter im
+    # Minutentakt in denselben Fehlschlag - ausloesbar allein dadurch, dass
+    # jemand "Dienst starten" drueckt, bevor ein Geraet eingetragen ist.
+    rm -f "$SOLL"
+    echo "FEHLER: Start fehlgeschlagen - siehe $LOGDATEI"
     return 1
 }
 
@@ -84,10 +132,14 @@ anhalten() {
     if ! laeuft; then
         rm -f "$PID"
         # Herrenlose Horcher trotzdem einsammeln
-        pkill -f "mosquitto_sub .*$PNAME" 2>/dev/null
+        pkill -f "mosquitto_sub .*loxberry-$PNAME-" 2>/dev/null
         echo "laeuft nicht"
         return 0
     fi
+    # Die Kennung traegt den ORDNERNAMEN, nicht das feste Wort "zendure".
+    # Sonst erschlaegt ein Stopp in der Installation "zendure" den Horcher
+    # von "zendure_01" gleich mit - dessen Kennung enthaelt die Zeichenkette
+    # ebenfalls. Passend dazu vergibt zd_horcher_starten() sie.
     P=$(cat "$PID")
     kill "$P" 2>/dev/null
     for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -103,6 +155,28 @@ anhalten() {
     echo "angehalten"
     return 0
 }
+
+# Ab hier nur einer auf einmal.
+#
+# Der minuetliche Waechter und ein Klick in der Oberflaeche koennen einander
+# ueberholen: beide sehen "laeuft nicht", beide starten. flock schliesst das
+# aus. Fehlt flock (kein util-linux), laeuft es ohne Sperre weiter - eine
+# fehlende Sperre ist ein Nachteil, ein abgebrochener Dienststart ein Ausfall.
+#
+# ACHTUNG, HIER STECKT EINE FALLE, und sie ist beim Bau von 0.9.9 zugeschnappt:
+# In der Form "flock <datei> <befehl>" oeffnet flock die Sperrdatei und der
+# gestartete Befehl ERBT den Dateizeiger. Der Abrufdienst haelt die Sperre
+# damit, solange er laeuft - und jedes spaetere "stop" wartet 60 Sekunden
+# vergeblich und tut dann gar nichts. Der Pruefstand hat es gefunden
+# (p7_dienst.sh, Zeile "stop beendet den Dienst nicht").
+#
+# Deshalb die ausdrueckliche Form mit einer eigenen Nummer: unten wird sie
+# beim Start des Dienstes mit "9>&-" geschlossen.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$SPERRE" 2>/dev/null || true
+    flock -w 60 9 2>/dev/null || \
+        echo "<WARNING> Sperre nicht bekommen - es laeuft offenbar schon ein Vorgang."
+fi
 
 case "$1" in
     start)   starten ;;
