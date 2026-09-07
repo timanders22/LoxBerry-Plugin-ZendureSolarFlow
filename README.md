@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.16 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.17 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,17 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.17 — der Reiter Test trennt Gateway und Plugin
+
+- **Der Reiter Test sagt jetzt, ob die MQTT-Veröffentlichung dieses Plugins
+  eingeschaltet ist.** Bis 0.9.16 stand dort nur der Zustand des MQTT-Gateways
+  von LoxBerry — das ist eine Aussage über den LoxBerry, nicht über dieses
+  Plugin. Wer die Veröffentlichung ausgeschaltet hatte, sah trotzdem einen
+  grünen Haken und konnte am Reiter nicht erkennen, dass nichts an den Broker
+  geht. Die neue Zeile steht vor der Gateway-Zeile und ist **grau**, wenn
+  ausgeschaltet — das ist eine Entscheidung, kein Fehler. Anlass: derselbe
+  Befund an BatterieBMS 0.9.17, dort am Gerät gemessen (`Regeln/04`).
 
 ## Version 0.9.14 — der Dienst spricht jetzt beide Sprachen
 
