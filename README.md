@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.18 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.19 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,35 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.19 — Retain je Thema
+
+Ein Broker kann den letzten Wert eines Themas festhalten (*retained*). Loxone
+hat ihn dann nach einem Neustart des Miniservers oder des Brokers sofort wieder.
+Bis 0.9.18 ging **jedes** Thema flüchtig hinaus; nach einem Neustart standen
+alle virtuellen Eingänge leer, bis der Dienst das nächste Mal etwas Neues sah.
+
+Die Entscheidung fällt **je Thema**, nicht je Absendung — sonst wäre entweder
+der Ladezustand flüchtig oder die Momentanleistung dauerhaft:
+
+| | Themen | warum |
+|---|---|---|
+| **zurückbehalten** | `ok`, `geraete`, `soc`, `soc_min`, `soc_max`, `grenze_ein`, `grenze_aus`, `acmodus`, `online`, `soll`, `sollok`, `packs`, alle Energiezähler (Tag, Monat, Jahr, gesamt, Wirkungsgrad, Zyklen), `pack/<SN>/soc`, `summe/soc`, `summe/kapaz`, `summe/restkwh` | Zustände und Zählerstände. Ein Zählerstand ist der Stand, nicht die Messung. |
+| **flüchtig** | `pv`, `haus`, `netz`, `batp`, `laden`, `entladen`, `temp`, `dvolt`, `pack/<SN>/volt`, `/dvolt`, `/temp`, `/watt`, `ms`, `summe/pv`, `summe/haus`, `summe/netz`, `summe/batp`, `summe/alter` | Messwerte mit Zeitbezug. Nach einem Ausfall stünde sonst ein alter Wert da und sähe aus wie eine frische Messung. |
+
+Der **Ladezustand** steht bewusst bei den Zuständen: er fällt nicht ins
+Bodenlose, wenn der Dienst hängt. Die Leistung daneben darf genau das nicht.
+Dieselbe Trennlinie zieht das Marstek-Venus-Plugin, dort an einem echten
+Speicher gemessen.
+
+Die Spalte *Zurückbehalten* im Reiter *MQTT* fragt dieselbe Funktion, die auch
+sendet. Ein Thema mit **leerem** Wert geht gar nicht hinaus: eine leere
+Nutzlast *löscht* ein zurückbehaltenes Thema im Broker.
+
+Beim Update räumt der Installer den Merker des Doppelt-senden-Filters
+(`mqtt_letzte.json`) ab — sonst würde alles, was sich seither nicht geändert
+hat, nicht gesendet und stünde damit auch nicht zurückbehalten im Broker.
+Nachsehen: `mosquitto_sub -t '<präfix>/#' --retained-only`.
 
 ## Version 0.9.17 — der Reiter Test trennt Gateway und Plugin
 

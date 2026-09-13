@@ -160,4 +160,17 @@ netz_zurueck() {
 }
 netz_zurueck "zendure.json" "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 
+# Nach dem Umbau auf Retain (0.9.19): den Merker des Doppelt-senden-Filters
+# abraeumen. Er liegt in data/ und ueberlebt ein Upgrade; was sich seither
+# nicht geaendert hat, wuerde also NICHT gesendet und stuende damit auch
+# nicht zurueckbehalten im Broker (Regeln/07, ACTiKamera 1.9.19 am
+# 10.09.2026). Der Dienst schickt zwar ohnehin alle mqtt_auffrischung
+# Sekunden alles - aber die Einstellung reicht bis 86400, und einen Tag lang
+# einen halben Zustand im Broker zu haben ist kein Zustand.
+#
+# Die Datei ist ein reiner Merker: sie zu loeschen kostet einen einzigen
+# vollen Versand und sonst nichts.
+rm -f "$PDATA/mqtt_letzte.json" 2>/dev/null
+
+
 exit 0

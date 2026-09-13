@@ -1278,13 +1278,18 @@ if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.A
 <h2><?= zd_e(zd_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th><?= zd_e(zd_t('MQTT.T_THEMA')) ?></th><th><?= zd_e(zd_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (zd_mqtt_themen() as $zd_thema => $zd_schluessel) { ?>
+<tr><th><?= zd_e(zd_t('MQTT.T_THEMA')) ?></th><th><?= zd_e(zd_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= zd_e(zd_t('MQTT.T_RETAIN')) ?></th></tr>
+<?php /* Die dritte Spalte fragt zd_mqtt_retain() - DIESELBE Funktion, die
+         auch sendet. Eine zweite Liste in der Oberflaeche waere eine zweite
+         Wahrheit, und sie waere die, die niemand nachmisst. */
+foreach (zd_mqtt_themen() as $zd_thema => $zd_schluessel) { ?>
 <tr><td><span class="sm-mono"><?= zd_e($zd_cfg['mqtt_topic'] . '/' . $zd_thema) ?></span></td>
-    <td><?= zd_t($zd_schluessel) ?></td></tr>
+    <td><?= zd_t($zd_schluessel) ?></td>
+    <td><?= zd_e(zd_t(zd_mqtt_retain($zd_thema) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= zd_t('MQTT.PLATZHALTER') ?></p>
+<p class="sm-hilfe"><?= zd_t('MQTT.RETAIN_ERKLAERUNG') ?></p>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->

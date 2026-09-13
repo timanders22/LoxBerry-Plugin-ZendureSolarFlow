@@ -1903,6 +1903,70 @@ function zd_mqtt_zustand()
 }
 
 /**
+ * Geht dieses Thema zurueckbehalten (retained) hinaus?
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): **Zustaende** retained, damit
+ * Loxone nach einem Neustart des Miniservers oder des Brokers sofort den
+ * Stand hat; **Messwerte mit Zeitbezug** nicht, damit kein alter Wert als
+ * aktueller erscheint; das **Lebenszeichen** nie.
+ *
+ * Die Entscheidung faellt je THEMA und nicht je Aufruf: der Dienst schickt
+ * Ladezustaende, Sollwerte und Momentanleistungen in EINEM Durchgang hinaus
+ * (ACTiKamera 1.9.19, 08.09.2026).
+ *
+ * Die Trennlinie ist dieselbe wie bei MarstekVenus 1.1.10, dem naechsten
+ * Verwandten - dort ist sie an einem echten Speicher gemessen:
+ *
+ *   Zustand   soc, soc_min, soc_max, grenze_ein, grenze_aus, acmodus,
+ *             online, soll, sollok, packs, geraete, ok, kapaz, restkwh,
+ *             alle Energiezaehler (Tag, Monat, Jahr, gesamt, Wirkungsgrad,
+ *             Zyklen) - ein Zaehlerstand ist der Stand, nicht die Messung
+ *   Messwert  pv, haus, netz, batp, laden, entladen, temp, dvolt, volt,
+ *             watt, ms - alles, was sich im Sekundentakt aendert und nach
+ *             einem Ausfall nicht stehenbleiben darf
+ *   Leben     summe/alter
+ *
+ * Der Ladezustand steht bewusst bei den Zustaenden: er faellt nicht ins
+ * Bodenlose, wenn der Dienst haengt, und Loxone soll ihn nach einem Neustart
+ * sofort haben. Die LEISTUNG daneben darf genau das nicht.
+ *
+ * Ein Thema OHNE Eintrag geht fluechtig. Das ist die sichere Richtung: ein
+ * nicht zurueckbehaltener Zustand ist unbequem, ein zurueckbehaltener Wert,
+ * an den niemand gedacht hat, bleibt fuer immer im Broker stehen.
+ */
+function zd_mqtt_retain($thema)
+{
+    /* Geraetenummer und Seriennummer heraus - die Tabelle fuehrt die Themen
+       in derselben Schreibweise wie zd_mqtt_themen() und der Reiter. */
+    $t = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $thema);
+    $t = preg_replace('#^geraetN/pack/[^/]+/#', 'geraetN/pack/<SN>/', $t);
+
+    /* Die Feldnamen unter heute/monat/jahr kommen aus der Zaehlerrechnung
+       und stehen nicht fest; Zaehlerstaende sind samt und sonders
+       Zustaende. */
+    if (preg_match('#^geraetN/energie/(heute|monat|jahr)/#', $t)) {
+        return true;
+    }
+
+    static $tab = null;
+    if ($tab === null) {
+        $tab = array();
+        foreach (array(
+            'ok', 'geraete',
+            'geraetN/soc', 'geraetN/soc_min', 'geraetN/soc_max',
+            'geraetN/grenze_aus', 'geraetN/grenze_ein', 'geraetN/acmodus',
+            'geraetN/online', 'geraetN/soll', 'geraetN/sollok',
+            'geraetN/packs',
+            'geraetN/energie/gesamt/laden', 'geraetN/energie/gesamt/entladen',
+            'geraetN/energie/wirkungsgrad', 'geraetN/energie/zyklen',
+            'geraetN/pack/<SN>/soc',
+            'summe/soc', 'summe/kapaz', 'summe/restkwh',
+        ) as $x) { $tab[$x] = true; }
+    }
+    return isset($tab[$t]);
+}
+
+/**
  * Werte ueber das LoxBerry-Gateway veroeffentlichen.
  *
  * Bewusst ueber den UDP-Eingang des Gateways und nicht mit einem eigenen
@@ -1929,7 +1993,22 @@ function zd_mqtt_senden(array $paare, $praefix)
         if ($v === null || $v === '') {
             continue;   // fehlender Wert: nichts senden statt eine erfundene 0
         }
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . zd_mqtt_wert_saeubern($v);
+        /* GESAEUBERT wird vor der Frage "ist er leer?", nicht danach. Ein
+           Wert aus lauter Leerzeichen faellt oben nicht durch ($v !== ''),
+           kaeme hier aber als leere Nutzlast an - und eine leere Nutzlast
+           LOESCHT ein zurueckbehaltenes Thema im Broker (mqttgateway.pl,
+           sub udpin: "Delete $udptopic from memory because of empty
+           message"). Ohne Retain war das folgenlos, mit Retain nimmt es dem
+           Miniserver den Wert weg. */
+        $wert = zd_mqtt_wert_saeubern($v);
+        if ($wert === '') {
+            continue;
+        }
+        /* Zustand oder Messwert - die Frage stellt zd_mqtt_retain() je
+           THEMA. Ueber das Gateway V1 heisst der Befehl dann "retain" statt
+           "publish" (mqttgateway.pl:293 und :354-357, am Geraet gemessen). */
+        $befehl = zd_mqtt_retain($k) ? 'retain' : 'publish';
+        $msg = $befehl . ' ' . $praefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
     }
     socket_close($s);
