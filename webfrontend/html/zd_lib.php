@@ -1748,7 +1748,24 @@ function zd_melden(array $befund)
         return false;      // der erste Befund ueberhaupt ist keine Aenderung
     }
     zd_log('Befund gewechselt: ' . $vorher . ' -> ' . $befund['kurz'] . ' (' . $befund['text'] . ')');
+    /* loxberry_log.php nachladen - weder der Cron noch die Oberflaeche
+     * laden sie von selbst.
+     *
+     * Bis 0.9.17 stand hier nur die Wache, und sie schlug IMMER an: am
+     * Geraet gemessen (LoxBerry 4.0.0.15, 13.09.2026) ist
+     * function_exists('notify_ext') ohne loxberry_log.php false. Es ging
+     * also nie eine Meldung hinaus, und weil hier ohne Protokollzeile
+     * zurueckgekehrt wurde, hat es niemand bemerkt. Deshalb sagt der
+     * Fehlschlag jetzt auch etwas. Bauart aus oc_lib.php des
+     * Octopus-Plugins. */
+    $zd_liblog = zd_paths()['home'] . '/libs/phplib/loxberry_log.php';
+    if (!function_exists('notify_ext') && is_file($zd_liblog)) {
+        @require_once $zd_liblog;
+    }
     if (!function_exists('notify_ext')) {
+        zd_log('Der Hinweis "' . $befund['text'] . '" konnte nicht an das '
+             . 'Benachrichtigungszentrum gehen: notify_ext() ist nicht '
+             . 'erreichbar (' . $zd_liblog . ').');
         return false;
     }
     notify_ext(array(

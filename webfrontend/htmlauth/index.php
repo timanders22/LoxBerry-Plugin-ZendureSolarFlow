@@ -975,27 +975,6 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
 <div class="sm-hilfe"><?= zd_t('EINST.GERAETE_HILFE') ?></div>
 <div class="sm-hilfe"><?= zd_t('EINST.H_QUITTUNGSFELD') ?></div>
 
-<h2><?= zd_e(zd_t('EINST.H_KONFIG')) ?></h2>
-<div class="sm-hinweis"><?= zd_t('EINST.KONFIG_ERKLAERUNG') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= zd_t('LEGENDE.TECHNIK') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span>
-</div>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="konfig_aus" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_AUS')) ?></button>
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_erg" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_ERG')) ?></button>
-  </form>
-  <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="file" name="konfig_datei" accept=".json,application/json" style="max-width:220px;">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_ein" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_EIN')) ?></button>
-  </form>
-</div>
-
 <h2><?= zd_e(zd_t('EINST.H_ZUORDNUNG')) ?></h2>
 <div class="sm-hinweis"><?= zd_t('EINST.ZUORDNUNG_ERKLAERUNG') ?></div>
 <?php
@@ -1182,6 +1161,34 @@ foreach (array(
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<?php /* Dieser Abschnitt stand bis 0.9.17 MITTEN IM Einstellungsformular.
+         Der Browser verwirft verschachtelte <form>-Marken: die beiden
+         Knoepfe gehoerten danach zum aeusseren Formular. "Ausgeben" hat
+         damit nebenbei die Einstellungen gespeichert, und "Einlesen" konnte
+         gar nicht funktionieren - dem aeusseren Formular fehlt
+         enctype="multipart/form-data", die Datei kam also nie an. Gemessen
+         mit Werkzeuge/formularpruefung.py am gerenderten HTML. */ ?>
+<h2><?= zd_e(zd_t('EINST.H_KONFIG')) ?></h2>
+<div class="sm-hinweis"><?= zd_t('EINST.KONFIG_ERKLAERUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= zd_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="konfig_aus" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_AUS')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_erg" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_ERG')) ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="konfig_datei" accept=".json,application/json" style="max-width:220px;">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_ein" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_EIN')) ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
