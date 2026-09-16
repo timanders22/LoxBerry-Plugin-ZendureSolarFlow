@@ -1690,8 +1690,16 @@ function zd_befund()
     $werte = zd_werte();
 
     if (!$geraete) {
+        /* Ob der Dienst laeuft, wird GEFRAGT, nicht angenommen. Bis 0.9.19
+         * stand hier immer "Der Dienst laeuft" - am LoxBerry am 17.09.2026
+         * gemessen: frisch installiert, dienst.sh status "gestoppt", kein
+         * Prozess, und der Healthcheck meldete trotzdem einen laufenden
+         * Dienst. Das Kuerzel bleibt dasselbe: zd_melden() merkt sich das
+         * Kuerzel, und ein Wechsel nur im Text ist kein neuer Befund. */
         return array('status' => 6, 'kurz' => 'keine_geraete',
-                     'text' => zd_t('BEFUND.KEINE_GERAETE'));
+                     'text' => zd_t(zd_dienst_pid() > 0
+                                    ? 'BEFUND.KEINE_GERAETE'
+                                    : 'BEFUND.KEINE_GERAETE_DIENST_AUS'));
     }
     if (zd_dienst_pid() === 0) {
         // Ein bewusst angehaltener Dienst ist kein Fehler, ein abgestuerzter

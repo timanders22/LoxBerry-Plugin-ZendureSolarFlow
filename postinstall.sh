@@ -59,6 +59,20 @@ fi
 
 [ -f "$PCONFIG/zendure.json" ] || echo '{}' > "$PCONFIG/zendure.json"
 
+# Bis 0.9.19 lag im Archiv zusaetzlich config/zendure.backup.json mit "{}".
+# Der Installer legte sie IN den Konfigordner; benutzt hat sie nie jemand -
+# die Zweitschrift steht neben dem Ordner ($BK unten). Der Installer
+# entfernt nichts, was er einmal kopiert hat, deshalb wird hier abgeraeumt:
+# aber nur, wenn die Datei leer ist. Steht etwas darin, hat es jemand
+# anderes dort abgelegt, und dann bleibt sie stehen.
+ALT="$PCONFIG/zendure.backup.json"
+if [ -f "$ALT" ]; then
+    ALT_INHALT=$(tr -d ' \t\n\r' < "$ALT" 2>/dev/null)
+    if [ -z "$ALT_INHALT" ] || [ "$ALT_INHALT" = "{}" ]; then
+        rm -f "$ALT" && echo "<INFO> Leere Altdatei zendure.backup.json im Konfigordner entfernt."
+    fi
+fi
+
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation)
 #
 # WARUM DIE MITGELIEFERTE config/zendure.json NUR "{}" ENTHALTEN DARF:

@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.19 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.20 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,27 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.20 — drei Befunde vom LoxBerry
+
+Diese Fassung ist am installierten 0.9.19 auf einem LoxBerry 4.0.0.15
+nachgemessen worden, ohne Zendure-Gerät. Drei Dinge stimmten nicht.
+
+**Der Healthcheck meldete einen laufenden Dienst, den es nicht gab.** Solange
+kein Gerät eingetragen ist, stand in der Systemübersicht des LoxBerry „Der
+Dienst läuft, damit die Gerätesuche im Reiter Test benutzbar ist" — auch
+unmittelbar nach der Installation, wenn der Dienst noch nie gestartet war.
+Jetzt wird nachgesehen, ob er läuft, und der Text sagt, was ist.
+
+**Eine leere Datei `zendure.backup.json` lag im Konfigordner.** Das Archiv
+brachte sie seit 0.9.15 mit; benutzt wurde sie nie. Die Sicherung der
+Einstellungen liegt daneben, unter `config/plugins/zendure.backup.json`. Die
+Datei ist aus dem Archiv entfernt, und das Update räumt sie auf bestehenden
+Anlagen ab — aber nur, wenn sie leer ist.
+
+**Der Sicherungsknopf heißt jetzt „Einstellungen sichern"**, die Überschrift
+„Einstellungen sichern und zurückspielen", wie in den übrigen Plugins dieser
+Reihe. Was der Knopf tut, ist unverändert.
 
 ## Version 0.9.19 — Retain je Thema
 
@@ -267,7 +288,7 @@ Tagesknopfe erreichbar, die Kurve trägt eine **zweite Linie** (Ladezustand
 und Leistung übereinander, nicht nacheinander), und ein Knopf gibt den Tag
 als **CSV** heraus — für eine Tabelle, in der man selbst rechnen will.
 
-### Konfiguration sichern und zurückspielen
+### Einstellungen sichern und zurückspielen
 
 Wer die Feldzuordnung von Hand nachgezogen hat, hat Arbeit investiert, die
 nirgends sonst steht. Der Reiter *Einstellungen* sichert die vollständige
