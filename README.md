@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.20 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.21 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,24 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.21 — die MQTT-Kachel zeigt das Plugin
+
+- **PHP-Fehler des laufenden Dienstes gehen ins Protokoll.** Bisher schrieb der
+  Dienst Warnungen und Absturzgründe auf seine Fehlerausgabe. Die zeigt auf eine
+  Datei, die die Protokollwartung von LoxBerry löschen kann — danach gingen die
+  Meldungen ungelesen verloren (am Gerät gemessen an BatterieBMS, 17.09.2026).
+  Jetzt stehen sie im Protokoll des Plugins.
+
+Die vierte Kachel im Kopf der Seite heißt „MQTT". Bis 0.9.20 zeigte sie den
+Autostart des MQTT-Gateways — nicht, ob dieses Plugin etwas an den Broker
+sendet. Neben der Prüfzeile im Reiter Test („Ist die MQTT-Veröffentlichung
+dieses Plugins eingeschaltet? Nein") las sich „MQTT ein" wie ein Widerspruch.
+
+Jetzt zeigt der große Wert, ob **dieses Plugin** veröffentlicht, wie die drei
+Kacheln davor ebenfalls den Zustand des Plugins zeigen. Darunter steht der
+Autostart des Gateways, ausdrücklich so benannt — oder „nicht feststellbar",
+wenn der LoxBerry dazu nichts hinterlegt hat.
 
 ## Version 0.9.20 — drei Befunde vom LoxBerry
 

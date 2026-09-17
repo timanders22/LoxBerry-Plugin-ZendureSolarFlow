@@ -805,9 +805,18 @@ if ($zd_rahmen) {
       echo (int) $zd_ok . ' ' . zd_e(zd_t('ALLG.ERREICHBAR'));
     ?></span>
   </div>
+  <!-- Der grosse Wert ist der Zustand DIESES Plugins, wie in den drei Kacheln
+       davor und in der Pruefzeile im Reiter Test. Bis 0.9.20 stand hier der
+       Autostart des Gateways (Gatewayautostart aus general.json) - neben der
+       Pruefzeile "Veroeffentlichung dieses Plugins: Nein" las sich "MQTT ein"
+       wie ein Widerspruch. Der Gateway-Autostart steht jetzt darunter und
+       sagt, dass er einer ist; ohne MQTT-Abschnitt in general.json heisst er
+       "nicht feststellbar" statt "aus". -->
   <div class="sm-kachel">MQTT
-    <b class="<?= $zd_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $zd_mqtt['autostart'] ? zd_e(zd_t('ALLG.EIN')) : zd_e(zd_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= zd_e(zd_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($zd_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($zd_cfg['mqtt_ein']) ? zd_e(zd_t('ALLG.EIN')) : zd_e(zd_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= zd_e(sprintf(zd_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$zd_mqtt['gefunden'] ? zd_t('ALLG.NICHT_FESTSTELLBAR')
+        : ($zd_mqtt['autostart'] ? zd_t('ALLG.EIN') : zd_t('ALLG.AUS')))) ?></span>
   </div>
 </div>
 
