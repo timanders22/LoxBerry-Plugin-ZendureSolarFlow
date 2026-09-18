@@ -9,6 +9,35 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 SKRIPT="$BASE/bin/plugins/$PFOLDER/zendure_dienst.php"
 
+# ---- Die Upgrade-Marke, als ERSTES ----
+#
+# Zwischen der Neuanlage der Cron-Datei und postinstall.sh liegt am Geraet fast
+# eine Minute (Regeln/06, "Der Minutentakt startet den Dienst MITTEN im
+# Upgrade"). Der Sollmerker dieses Plugins liegt seit 0.9.9 NEBEN dem
+# Datenordner und ueberlebt purge_installation - der Waechter startet den
+# Dienst in dieser Luecke also tatsaechlich. Gemessen 18.09.2026 in WSL
+# (Pruefung-ZendureSolarFlow-0.9.23/Pruefstaende/vorher.txt, Fall 3: ein
+# Dienst, wo keiner erwartet war).
+#
+# Die Marke liegt NEBEN data/plugins/<ordner>, sonst nimmt purge_installation
+# sie mit. Sie traegt die Unixzeit; bin/dienst.sh achtet sie, solange sie
+# juenger als 3600 s ist.
+#
+# Als Erstes, noch vor dem Anhalten des Dienstes: das Anhalten wartet bis zu
+# zehn Sekunden je Prozess, und in dieser Zeit kann der Minutentakt laufen.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+if date +%s > "$MARKE" 2>/dev/null; then
+    echo "<INFO> Upgrade-Marke gesetzt: $MARKE"
+else
+    # Ohne Marke wird die Luecke nicht gedeckt - das gehoert gesagt, nicht
+    # verschwiegen. Abgebrochen wird deswegen nicht: der Zustand ohne Marke ist
+    # genau der von 0.9.22, und der hat in der Messung nichts verloren.
+    rm -f "$MARKE" 2>/dev/null
+    echo "<WARNING> Die Upgrade-Marke liess sich nicht anlegen ($MARKE)."
+    echo "<WARNING> Der Minutentakt kann den Dienst waehrend der Aktualisierung starten."
+fi
+
 # Der Dienst wird NICHT ueber dienst.sh angehalten: "dienst.sh stop" entfernt
 # den Sollmerker, und dann startet der minuetliche Waechter den Dienst nach
 # dem Upgrade nicht wieder. Angehalten wird deshalb hier - aber nur der

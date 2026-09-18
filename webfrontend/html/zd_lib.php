@@ -124,6 +124,11 @@ function zd_paths()
             'bestand'    => $home . '/data/plugins/' . $dir . '.bestand',
             'verlaufdir' => $home . '/data/plugins/' . $dir . '.bestand/verlauf',
             'soll'       => $home . '/data/plugins/' . $dir . '.bestand/soll_laufen',
+            /* Die Upgrade-Marke, aus demselben Grund neben dem Datenordner:
+             * preupgrade.sh legt sie an, purge_installation nimmt sie deshalb
+             * nicht mit, postinstall.sh raeumt sie weg. bin/dienst.sh startet
+             * nicht, solange sie liegt und juenger als 3600 s ist. */
+            'marke'      => $home . '/data/plugins/' . $dir . '.upgrade_laeuft',
             'bindir'    => $home . '/bin/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
             'log'       => $home . '/log/plugins/' . $dir . '/zendure.log',
@@ -140,6 +145,7 @@ function zd_paths()
             'bestand'    => $basis . '/data.bestand',
             'verlaufdir' => $basis . '/data.bestand/verlauf',
             'soll'       => $basis . '/data.bestand/soll_laufen',
+            'marke'      => $basis . '/data.upgrade_laeuft',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
             'log'       => $basis . '/log/zendure.log',
@@ -1548,6 +1554,80 @@ function zd_log_gebremst($schluessel, $text, $sekunden = 3600)
 
 /* ---------------- Dienst ---------------- */
 
+/**
+ * Ist dieser Prozess UNSER Abrufdienst?
+ *
+ * Bis 0.9.22 stand in zd_dienst_pid() ein
+ * strpos($cmd, 'zendure_dienst.php') ueber die GANZE Befehlszeile. Das ist
+ * dieselbe Bauart, die am 18.09.2026 in preupgrade.sh und bin/dienst.sh
+ * ersetzt worden ist (Klasse F): sie trifft jeden Prozess, der die
+ * Zeichenkette irgendwo fuehrt - "nano .../zendure_dienst.php", ein
+ * "tail -f" auf die Datei, und vor allem den Dienst einer ZWEITEN
+ * Installation (zendure_01), dessen Pfad die Zeichenkette ebenfalls
+ * enthaelt. Prozessnummern werden wiederverwendet; die PID-Datei kann aus
+ * einem abgestuerzten Lauf stammen.
+ *
+ * Das ist hier keine Schoenheitsfrage, denn an dieser Antwort haengen drei
+ * Entscheidungen, nicht nur eine Anzeige:
+ *   webfrontend/html/index.php  der unangemeldete Loxone-Endpunkt reiht einen
+ *                               Schaltbefehl nur ein, wenn ein Dienst laeuft -
+ *                               sonst 503. Ein falsches "laeuft" nimmt dem
+ *                               Miniserver die klare Absage und legt einen
+ *                               Befehl in eine Warteschlange, die niemand
+ *                               abarbeitet.
+ *   zd_befund()                 speist bin/healthcheck (LoxBerry-Statusseite,
+ *                               retained nach MQTT) und zd_melden().
+ *   webfrontend/htmlauth        Anzeige im Reiter Einstellungen und im Test.
+ *
+ * Geprueft wird deshalb argumentweise, genau wie laeuft() in bin/dienst.sh
+ * und zd_eigener_dienst() in preupgrade.sh:
+ *   argv[0] ist ein PHP,
+ *   argv[1] ist - bei relativem Start ueber /proc/<pid>/cwd aufgeloest -
+ *   zeichengenau das Dienstskript DIESER Installation,
+ *   und es gibt kein drittes Argument (ein "--selbsttest" ist kein Dienst).
+ *
+ * Auf eine Benutzerpruefung wird verzichtet, wie in laeuft(): die Nummer
+ * kommt aus der eigenen PID-Datei im eigenen Datenordner, den nur der
+ * Dienstbenutzer beschreibt. In preupgrade.sh, das ueber ALLE Prozesse geht,
+ * steht sie sehr wohl.
+ */
+function zd_ist_dienst($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
+        return false;
+    }
+    $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+    if ($roh === '') {
+        return false;
+    }
+    $args = explode("\0", rtrim($roh, "\0"));
+    if (count($args) !== 2) {
+        return false;
+    }
+    if (!preg_match('/^php[0-9.]*$/', basename($args[0]))) {
+        return false;
+    }
+    $ziel = $args[1];
+    if (substr($ziel, 0, 1) !== '/') {
+        $wd = @readlink('/proc/' . $pid . '/cwd');
+        if (!is_string($wd) || $wd === '') {
+            return false;
+        }
+        // Den Zusatz " (deleted)" haengt der Kern an, wenn das
+        // Arbeitsverzeichnis inzwischen fort ist (Regeln/06).
+        $wd = preg_replace('/ \(deleted\)$/', '', $wd);
+        $ziel = $wd . '/' . $ziel;
+    }
+    $soll = zd_paths()['bindir'] . '/zendure_dienst.php';
+    $zr = @realpath($ziel);
+    $sr = @realpath($soll);
+    if ($zr !== false && $sr !== false) {
+        return $zr === $sr;
+    }
+    return $ziel === $soll;
+}
+
 function zd_dienst_pid()
 {
     $f = zd_paths()['datadir'] . '/dienst.pid';
@@ -1555,16 +1635,47 @@ function zd_dienst_pid()
         return 0;
     }
     $pid = (int) trim((string) @file_get_contents($f));
-    if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
-        return 0;
-    }
-    $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'zendure_dienst.php') !== false ? $pid : 0;
+    return zd_ist_dienst($pid) ? $pid : 0;
 }
 
 function zd_dienst_soll()
 {
     return is_file(zd_paths()['soll']) ? 1 : 0;
+}
+
+/**
+ * Liegt die Upgrade-Marke, und gilt sie?
+ *
+ * preupgrade.sh legt sie als Erstes an, bin/dienst.sh startet nicht, solange
+ * sie juenger als 3600 s ist, postinstall.sh raeumt sie weg. Diese Funktion
+ * ist die Auskunft dafuer - der Reiter Test zeigt sie an, damit die Regel ein
+ * Werkzeug hat, das sie findet (CLAUDE.md, Abschnitt 6).
+ *
+ * Sie urteilt genauso wie marke_gilt() in bin/dienst.sh: ohne Zeitpunkt,
+ * aelter als 3600 s oder aus der Zukunft gilt die Marke nicht. Den Fall
+ * "keine lesbare Uhr" gibt es hier nicht - time() liefert immer etwas.
+ *
+ * Die Oberflaeche wird bei liegender Marke NICHT gesperrt. Das ist eine
+ * Messung, keine Regel (Regeln/06, Nachtrag 17.09.2026): am 18.09.2026 in
+ * WSL gemessen (Pruefung-ZendureSolarFlow-0.9.23, Fall 5) hat ein
+ * Seitenaufbau mitten in der Luecke weder das Aktionstoken noch die
+ * Geraeteliste verloren - die Selbstheilung holt beides aus derselben
+ * Zweitschrift, die auch postinstall.sh benutzt. Eine Sperre ohne gemessenen
+ * Schaden nimmt dem Anwender nur die Seite.
+ */
+function zd_marke()
+{
+    $f = zd_paths()['marke'];
+    if (!is_file($f)) {
+        return array('da' => 0, 'alter' => -1, 'gilt' => 0, 'pfad' => $f);
+    }
+    $roh = trim((string) @file_get_contents($f));
+    if ($roh === '' || !preg_match('/^[0-9]+$/', $roh)) {
+        return array('da' => 1, 'alter' => -1, 'gilt' => 0, 'pfad' => $f);
+    }
+    $alter = time() - (int) $roh;
+    return array('da' => 1, 'alter' => $alter,
+                 'gilt' => ($alter >= 0 && $alter < 3600) ? 1 : 0, 'pfad' => $f);
 }
 
 /**

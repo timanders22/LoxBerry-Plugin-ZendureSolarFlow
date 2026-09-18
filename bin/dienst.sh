@@ -60,6 +60,10 @@ SKRIPT="$SELF/zendure_dienst.php"
 # Ein Sperrmerker gegen zwei gleichzeitige Laeufe. Ohne ihn koennen der
 # minuetliche Waechter und ein Klick in der Oberflaeche einander ueberholen.
 SPERRE="$PBESTAND/dienst.sperre"
+# Die Upgrade-Marke. Sie liegt NEBEN dem Datenordner, wie der Bestandsordner:
+# preupgrade.sh legt sie an, purge_installation loescht sie deshalb nicht mit,
+# und postinstall.sh raeumt sie wieder weg.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 
 mkdir -p "$PDATA" "$PLOG" "$PBESTAND" 2>/dev/null
 
@@ -88,7 +92,50 @@ laeuft() {
     return 0
 }
 
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Zwischen der Neuanlage der Cron-Datei und postinstall.sh liegt am Geraet
+# fast eine Minute (Regeln/06: preupgrade 03:31:30, Cron neu 03:31:32,
+# postinstall 03:32:24). In dieser Luecke laeuft der Minutentakt - und weil
+# der Sollmerker seit 0.9.9 NEBEN dem Datenordner liegt, ueberlebt er
+# purge_installation und der Waechter startet den Dienst mitten im Upgrade.
+# Gemessen 18.09.2026 in WSL (Pruefung-ZendureSolarFlow-0.9.23, Fall 3):
+# "in der Luecke startet KEIN Dienst: 1 (erwartet 0)". Die Einstellungen
+# gingen dabei nicht verloren - die Selbstheilung aus 0.9.22 holt sie aus der
+# Zweitschrift zurueck -, aber ein Dienst, der waehrend des Auspackens und
+# waehrend dpkg/apt anlaeuft, ist ein Zustand, den niemand gewollt hat.
+#
+# Regeln der Marke (AUFTRAG_gemeinsam.md, Abschnitt "Marke"):
+#   - juenger als 3600 s  -> sie gilt, es wird nicht gestartet, Rueckgabe 0
+#   - aelter, aus der Zukunft oder ohne Zeitpunkt -> sie gilt NICHT; eine
+#     abgebrochene Installation darf den Dienst nicht fuer immer stilllegen
+#   - OHNE LESBARE UHR FAELLT DIE PRUEFUNG GESCHLOSSEN AUS: liefert "date"
+#     nichts, gilt die Marke. Ein Schutz, der bei fehlender Messung durchlaesst,
+#     ist keiner (CLAUDE.md, Abschnitt 4).
+#   - ZD_START_TROTZ_MARKE=1 ist die Ausnahme fuer das Hakenskript selbst.
+marke_gilt() {
+    [ -f "$MARKE" ] || return 1
+    [ "${ZD_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    MI=$(head -c 32 "$MARKE" 2>/dev/null | tr -d ' \t\n\r')
+    case "$MI" in
+        ''|*[!0-9]*) return 1 ;;   # kein Zeitpunkt - die Marke gilt nicht
+    esac
+    MJ=$(date +%s 2>/dev/null)
+    case "$MJ" in
+        ''|*[!0-9]*) return 0 ;;   # keine lesbare Uhr - geschlossen
+    esac
+    [ "$MI" -gt "$MJ" ] && return 1              # aus der Zukunft
+    [ $((MJ - MI)) -lt 3600 ] && return 0
+    return 1
+}
+
 starten() {
+    if marke_gilt; then
+        echo "Es laeuft gerade eine Aktualisierung dieses Plugins ($MARKE) -"
+        echo "der Dienst wird nicht gestartet. Das letzte Hakenskript raeumt die"
+        echo "Marke weg; der naechste Waechterlauf startet ihn dann."
+        return 0
+    fi
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
@@ -239,7 +286,16 @@ fi
 case "$1" in
     start)   starten ;;
     stop)    anhalten ;;
-    restart) anhalten; sleep 1; starten ;;
+    restart)
+        # Die Marke VOR dem Anhalten pruefen: anhalten() entfernt den
+        # Sollmerker, und ohne ihn bliebe der Dienst nach dem Upgrade aus -
+        # der Waechter startet nur, was laufen SOLL.
+        if marke_gilt; then
+            echo "Es laeuft gerade eine Aktualisierung dieses Plugins ($MARKE) -"
+            echo "der Dienst wird nicht neu gestartet."
+            exit 0
+        fi
+        anhalten; sleep 1; starten ;;
     status)
         if laeuft; then
             echo "laeuft $(cat "$PID")"
@@ -249,6 +305,12 @@ case "$1" in
         exit 1
         ;;
     waechter)
+        # Waehrend einer Aktualisierung still aussteigen - ohne Protokollzeile.
+        # Der Takt laeuft minuetlich; eine Meldung je Lauf waere bis zu einer
+        # Stunde lang Rauschen im Protokoll, und Rauschen liest niemand.
+        if marke_gilt; then
+            exit 0
+        fi
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
         if [ -f "$SOLL" ] && ! laeuft; then

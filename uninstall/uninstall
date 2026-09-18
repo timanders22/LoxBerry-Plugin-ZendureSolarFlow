@@ -102,6 +102,20 @@ else
     echo "<INFO> Kein Bestandsordner vorhanden."
 fi
 
+# ---- 4. Die Upgrade-Marke ----
+#
+# Sie liegt aus demselben Grund neben dem Datenordner wie der Bestandsordner:
+# purge_installation soll sie nicht mitnehmen. Beim Deinstallieren ist genau
+# das falsch. Bliebe sie liegen, faende eine spaetere Neuinstallation eine
+# fremde Marke vor - und solange sie juenger als 3600 s ist, startete der
+# Dienst nicht, ohne dass irgendwo stuende, warum.
+ZD_MARKE="$BASE/data/plugins/$PDIR.upgrade_laeuft"
+if [ -f "$ZD_MARKE" ]; then
+    rm -f "$ZD_MARKE" && echo "<OK> Upgrade-Marke entfernt: $PDIR.upgrade_laeuft"
+else
+    echo "<INFO> Keine Upgrade-Marke vorhanden."
+fi
+
 echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
 echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
 echo "<INFO> (Vorgabe: zendure/...). Zum Aufraeumen: LoxBerry -> System ->"

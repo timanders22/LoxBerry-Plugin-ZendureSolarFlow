@@ -31,6 +31,31 @@ PBESTAND="$BASE/data/plugins/$PFOLDER.bestand"
 PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 
+# ---- Die Upgrade-Marke wieder wegraeumen ----
+#
+# preupgrade.sh legt sie an; bin/dienst.sh startet nicht, solange sie liegt.
+# Dieses Skript ist das Rueckgabefenster (Regeln/06) und damit die Stelle, an
+# der sie fallen muss - der Startweg prueft sie selbst, also kommt es auf die
+# Reihenfolge gegenueber einem Dienststart hier nicht an.
+#
+# Ueber trap, NICHT am Dateiende: dieses Skript steigt an mehreren Stellen mit
+# "exit 1" aus (Ordner nicht anlegbar, kein PHP). Ohne trap bliebe der Dienst
+# nach einer gescheiterten Installation eine Stunde gesperrt, ohne dass
+# irgendwo stuende, warum. Gemessen an Sprachsteuerung 0.11.7 (Regeln/06,
+# Nachtrag 17.09.2026): eine Kommandoersetzung und eine Unterschale loesen den
+# EXIT-Trap nicht aus, die Marke faellt also nicht zu frueh.
+#
+# postupgrade.sh leitet hierher weiter, LoxBerry ruft beim Upgrade aber BEIDE
+# Haken (Regeln/06). Der zweite Lauf findet die Marke bereits fort; "rm -f"
+# ist dann ein Leerlauf und kein Fehler.
+ZD_MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+zd_marke_weg() {
+    if [ -f "$ZD_MARKE" ]; then
+        rm -f "$ZD_MARKE" && echo "<INFO> Upgrade-Marke entfernt: $ZD_MARKE"
+    fi
+}
+trap zd_marke_weg EXIT
+
 mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PDATA/mosq" \
          "$PBESTAND/verlauf" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."

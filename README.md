@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.22 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.23 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,56 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.23 — der Dienst startet nicht mitten in einer Aktualisierung
+
+Alles in diesem Abschnitt ist nachgestellt und gemessen (18.09.2026, WSL
+Ubuntu, PHP 8.3.6; Syntax zusätzlich gegen 7.4.33 und 8.4.24). Die Prüfstände
+liegen unter `Pruefung-ZendureSolarFlow-0.9.23/`. **Am Gerät ist nichts
+nachgemessen.**
+
+- **Eine Upgrade-Marke hält den Minutentakt während der Aktualisierung an.**
+  Zwischen der Neuanlage der Cron-Datei und `postinstall.sh` vergeht auf
+  einem LoxBerry knapp eine Minute. Der Sollmerker dieses Plugins liegt seit
+  0.9.9 **neben** dem Datenordner und übersteht deshalb das Abräumen — der
+  minütliche Wächter startete den Dienst also tatsächlich mitten im Update,
+  mit der mitgelieferten leeren Konfiguration. Gemessen: ein Dienst, wo
+  keiner sein sollte. Verloren ging dabei nichts, weil die Selbstheilung aus
+  0.9.22 Aktionstoken und Geräteliste aus der Zweitschrift zurückholt; ein
+  Dienst, der während des Auspackens und während der Paketinstallation
+  anläuft, ist trotzdem kein Zustand, den jemand gewollt hat.
+  `preupgrade.sh` legt jetzt als Erstes `data/plugins/<ordner>.upgrade_laeuft`
+  mit der Unixzeit an; `bin/dienst.sh` startet nicht, solange sie liegt und
+  jünger als eine Stunde ist; `postinstall.sh` räumt sie über einen
+  `trap … EXIT` wieder weg — auch wenn die Installation vorzeitig abbricht —,
+  und `uninstall` entfernt sie ebenfalls.
+- **Die Marke fällt geschlossen aus, aber sie sperrt nicht für immer.** Ohne
+  lesbare Uhr gilt sie (ein Schutz, der bei fehlender Messung durchlässt, ist
+  keiner). Ist sie älter als 3600 Sekunden, trägt sie keinen Zeitpunkt oder
+  kommt sie aus der Zukunft, gilt sie **nicht** — eine abgebrochene
+  Installation darf den Dienst nicht dauerhaft stilllegen. Der Reiter Test
+  zeigt an, ob eine Marke liegt und wie alt sie ist; eine liegengebliebene
+  meldet er als Befund.
+- **Die Oberfläche wird während einer Aktualisierung nicht gesperrt.** Das ist
+  eine Messung, keine Regel: ein Seitenaufbau mitten in der Lücke hat weder
+  das Aktionstoken noch die Geräteliste verloren. Eine Sperre ohne gemessenen
+  Schaden nähme dem Anwender nur die Seite.
+- **`zd_dienst_pid()` erkennt den eigenen Dienst jetzt argumentweise.** Bis
+  0.9.22 entschied ein `strpos()` über die **ganze** Befehlszeile. Damit galt
+  auch ein Editor mit geöffneter `zendure_dienst.php` als laufender Dienst —
+  und vor allem der Dienst einer **zweiten Installation** (`zendure_01`),
+  dessen Pfad dieselbe Zeichenkette enthält. Prozessnummern werden
+  wiederverwendet, und die Nummer in der PID-Datei kann aus einem
+  abgestürzten Lauf stammen. Daran hängt nicht nur eine Anzeige: der
+  unangemeldete Loxone-Endpunkt reiht einen Schaltbefehl nur ein, wenn ein
+  Dienst läuft — sonst antwortet er mit HTTP 503 und
+  `GRUND=DIENST_LAEUFT_NICHT`. Gemessen: mit einem Köder in der PID-Datei
+  nahm er den Befehl an und ließ den Miniserver auf eine Antwort warten, die
+  niemand gab; der Healthcheck meldete „in Ordnung“ für einen Dienst, der
+  nicht lief. Geprüft wird jetzt wie in `bin/dienst.sh` und `preupgrade.sh`:
+  `argv[0]` ist ein PHP, `argv[1]` ist zeichengenau das eigene Dienstskript
+  (bei relativem Start über `/proc/<pid>/cwd` aufgelöst), und ein drittes
+  Argument gibt es nicht — ein `--selbsttest` ist kein Dienst.
 
 ## Version 0.9.22 — das Aktionstoken übersteht eine halb geschriebene Datei
 

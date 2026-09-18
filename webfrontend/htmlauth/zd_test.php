@@ -186,6 +186,29 @@ function zd_pruefungen()
         $pid > 0 ? zd_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (zd_dienst_soll() ? zd_t('TEST.A_DIENST_SOLL_TOT') : zd_t('TEST.A_DIENST_GESTOPPT')));
 
+    /* Die Upgrade-Marke sichtbar machen. Zu jeder Regel gehoert das Werkzeug,
+     * das sie findet (CLAUDE.md, Abschnitt 6): ohne diese Zeile waere eine
+     * liegengebliebene Marke nur an der Kommandozeile zu sehen - und ein
+     * Dienst, der "aus unerfindlichen Gruenden" nicht startet, ist die
+     * teuerste Art von Befund.
+     *
+     * Eine gueltige Marke ist KEIN Fehler (-1, Hinweis): sie gehoert zum
+     * laufenden Update. Eine liegengebliebene ist einer (0): dann ist ein
+     * Hakenskript nicht zu Ende gelaufen. */
+    $zd_m = zd_marke();
+    if (!$zd_m['da']) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_MARKE'), zd_t('TEST.A_MARKE_KEINE'));
+    } elseif ($zd_m['gilt']) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_MARKE'),
+            sprintf(zd_t('TEST.A_MARKE_LAEUFT'), (int) $zd_m['alter']));
+    } elseif ((int) $zd_m['alter'] < 0) {
+        $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_MARKE'),
+            sprintf(zd_t('TEST.A_MARKE_KAPUTT'), zd_e($zd_m['pfad'])));
+    } else {
+        $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_MARKE'),
+            sprintf(zd_t('TEST.A_MARKE_ALT'), (int) $zd_m['alter'], zd_e($zd_m['pfad'])));
+    }
+
     $zeilen[] = zd_pruefzeile(count($geraete) > 0 ? 1 : 0, zd_t('TEST.F_GERAETE'),
         count($geraete) > 0 ? sprintf(zd_t('TEST.A_GERAETE'), count($geraete))
                             : zd_t('TEST.A_KEINE_GERAETE'));
