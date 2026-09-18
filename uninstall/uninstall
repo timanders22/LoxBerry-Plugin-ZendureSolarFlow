@@ -30,16 +30,50 @@
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="zendure"
-BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Der Installer legt dieses Skript als <home>/data/system/uninstall/<ordner>
-# ab und uebergibt die LoxBerry-Wurzel als fuenftes Argument
-# (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026);
-# dieser Zweig greift nur, wenn beides fehlt.
+# Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
+# statt vollziehen; dieselbe Regel wie bin/dienst.sh):
+#   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel
+#      (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026),
+#   2. $LBHOMEDIR, wenn darunter config/plugins und data/plugins liegen,
+#   3. vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+#      config/plugins, data/plugins UND config/system/general.json.
+# Bewusst kein fest verdrahteter Systempfad - LoxBerry laesst sich
+# anderswohin installieren. Der Installer legt dieses Skript als
+# <home>/data/system/uninstall/<ordner> ab; Stufe 3 findet von dort <home>.
+# Findet keine Stufe etwas, wird nichts beendet und nichts entfernt.
+# Bis 0.9.24 wurden hier ohne Pruefung drei Ebenen hinauf gerechnet, und ein
+# beliebiges Verzeichnis in $LBHOMEDIR galt als Wurzel. In WSL gemessen
+# (Pruefung-ZendureSolarFlow-0.9.25/messe_haken.sh, Faelle U1-U4): abgelegt
+# in einem fremden Baum ohne general.json loeschte das Skript dort beide
+# Sicherungen, den Bestandsordner und die Marke und meldete Erfolg.
+zd_wurzel_suchen() {
+    zd_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    zd_i=0
+    while [ -n "$zd_v" ] && [ "$zd_v" != "/" ] && [ "$zd_i" -lt 8 ]; do
+        if [ -d "$zd_v/config/plugins" ] && [ -d "$zd_v/data/plugins" ] \
+           && [ -f "$zd_v/config/system/general.json" ]; then
+            echo "$zd_v"
+            return 0
+        fi
+        zd_v=$(dirname "$zd_v")
+        zd_i=$((zd_i + 1))
+    done
+    return 1
+}
+BASE="${5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(zd_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - nichts beendet, nichts entfernt."
+    echo "<WARNING> Liegen bleiben koennen config/plugins/$PDIR.backup.json und"
+    echo "<WARNING> config/plugins/$PDIR.backup.zendure.json mit dem Aktionstoken."
+    exit 1
 fi
 
 SKRIPT="$BASE/bin/plugins/$PDIR/zendure_dienst.php"

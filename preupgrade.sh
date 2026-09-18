@@ -4,7 +4,48 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-zendure}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
+# statt vollziehen; dieselbe Regel wie bin/dienst.sh):
+#   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel
+#      (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026),
+#   2. $LBHOMEDIR, wenn darunter config/plugins und data/plugins liegen,
+#   3. vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+#      config/plugins, data/plugins UND config/system/general.json.
+# Dieses Skript laeuft im Tempordner <home>/data/system/tmp/uploads/<name>
+# (plugininstall.pl:343); Stufe 3 findet von dort <home>. Bis 0.9.24 blieb
+# BASE ohne fuenftes Argument und ohne $LBHOMEDIR leer - alle Pfade begannen
+# dann mit /data/ und /config/ (als root: Schreiben in /) -, und ein
+# beliebiges Verzeichnis in $LBHOMEDIR galt als Wurzel. In WSL gemessen
+# (Pruefung-ZendureSolarFlow-0.9.25/messe_haken.sh, Faelle V1, V2, V4).
+# Ohne Wurzel wird jetzt nichts angelegt und nichts angehalten.
+zd_wurzel_suchen() {
+    zd_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    zd_i=0
+    while [ -n "$zd_v" ] && [ "$zd_v" != "/" ] && [ "$zd_i" -lt 8 ]; do
+        if [ -d "$zd_v/config/plugins" ] && [ -d "$zd_v/data/plugins" ] \
+           && [ -f "$zd_v/config/system/general.json" ]; then
+            echo "$zd_v"
+            return 0
+        fi
+        zd_v=$(dirname "$zd_v")
+        zd_i=$((zd_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(zd_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - keine Upgrade-Marke,"
+    echo "<WARNING> kein Dienst angehalten, keine Zweitschrift angelegt."
+    exit 1
+fi
 
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 SKRIPT="$BASE/bin/plugins/$PFOLDER/zendure_dienst.php"
@@ -203,7 +244,10 @@ echo "<OK> preupgrade abgeschlossen."
 # an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
 # jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
 # ueberschriebenen Ordners und wird vom Installer nicht angefasst.
-NETZ_BASE="${5:-$LBHOMEDIR}"
+# Dieselbe Wurzel wie oben (bis 0.9.24 hier eigens "${5:-$LBHOMEDIR}";
+# ohne fuenftes Argument fehlte dann die Wurzel, Fall I5 bzw. V4b in
+# Pruefung-ZendureSolarFlow-0.9.25/messe_haken.sh).
+NETZ_BASE="$BASE"
 NETZ_PDIR="${3:-zendure}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # "[ -s ]" heisst nur "nicht leer" und ist zu schwach (Regeln/05): eine

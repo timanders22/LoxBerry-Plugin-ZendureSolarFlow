@@ -71,21 +71,42 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die LoxBerry-Wurzel fuer zd_paths(), zd_t() und zd_sprache(), in dieser
+ * Reihenfolge:
+ *   1. $LBHOMEDIR, wenn darunter config/plugins liegt. Ein Verzeichnis ohne
+ *      config/plugins ist keine Wurzel, auch wenn die Umgebung es nennt.
+ *      general.json wird hier NICHT verlangt: die Pruefkette setzt
+ *      LBHOMEDIR auf eine Attrappe (Werkzeuge/lb), die nur so aussieht.
+ *   2. lb_wurzel_ermitteln() - aufwaerts, mit general.json.
+ *   3. sonst leer. Dahinter steht KEIN fester Standardort mehr; die Aufrufer
+ *      arbeiten dann im eigenen Ordner (Archivmodus).
+ * Bis 0.9.24 galt jedes vorhandene Verzeichnis in $LBHOMEDIR als Wurzel, ein
+ * nicht vorhandenes blieb stehen, wenn die Suche nichts fand, und in
+ * zd_paths() und zd_t() folgte der feste Standardort eines LoxBerry. In WSL
+ * gemessen (Pruefung-ZendureSolarFlow-0.9.25/messe_h2.sh): aus einem
+ * ausgepackten Archiv heraus las die Bibliothek die Konfiguration eines
+ * fremden Baums an diesem Ort, schrieb dort aus dessen Zweitschrift eine
+ * zendure.json, lud dessen Sprachdatei und hielt dessen Upgrade-Marke fuer
+ * die eigene (Faelle B1-B8); mit LBHOMEDIR auf einem beliebigen Verzeichnis
+ * nahm sie dieses als Wurzel, auch aus der Anlage heraus (B9-B11, E1).
+ */
+function zd_lbhome()
+{
+    $home = getenv('LBHOMEDIR');
+    if ($home && is_dir($home . '/config/plugins')) {
+        return $home;
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function zd_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
-    }
+    // Ohne Wurzel ist $home leer: Archivmodus weiter unten (zd_lbhome()).
+    $home = zd_lbhome();
     // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
@@ -2910,10 +2931,7 @@ function zd_sprache()
      * zurueck, auch auf einem englischen LoxBerry. Base.Lang in der
      * general.json ist der Wert, den der LoxBerry selbst fuehrt. */
     if ($sprache === '') {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            $home = lb_wurzel_ermitteln();
-        }
+        $home = zd_lbhome();
         if ($home) {
             $d = zd_json_lesen($home . '/config/system/general.json');
             if (isset($d['Base']['Lang'])) {
@@ -2932,15 +2950,8 @@ function zd_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
-        }
+        // Wie zd_paths(): ohne festen Standardort dahinter (Fall B4).
+        $home = zd_lbhome();
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
         if (!is_dir($pfad)) {

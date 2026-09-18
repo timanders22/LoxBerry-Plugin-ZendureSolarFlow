@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.24 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.25 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,54 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.25 — ohne LoxBerry-Wurzel kein Rückfall mehr, auch nicht in Oberfläche und Hakenskripten
+
+Nachgestellt und gemessen am 19.09.2026 in WSL Ubuntu; der Prüfstand liegt
+unter `Pruefung-ZendureSolarFlow-0.9.25/`: 54 Fälle, vorher 28 rot, nachher
+0; jede der 14 Korrekturen einzeln zurückgebaut macht genau ihre Fälle
+wieder rot. Die 38 Fälle aus 0.9.24 bleiben grün. **Am Gerät ist nichts
+nachgemessen.** Geändert sind `webfrontend/html/zd_lib.php`,
+`uninstall/uninstall`, `postinstall.sh` und `preupgrade.sh`. Auf einer
+regulären Installation übergibt LoxBerry die Wurzel als fünftes Argument
+und setzt `$LBHOMEDIR` — dort ändert sich nichts.
+
+- **Die Oberfläche fällt ohne Wurzel nicht mehr auf den festen
+  Standardort zurück.** `zd_paths()` und die Sprachdateien (`zd_t()`) nahmen
+  bis 0.9.24, wenn weder `$LBHOMEDIR` noch die Suche etwas fanden, den festen
+  Standardort eines LoxBerry. Gemessen aus einem ausgepackten Archiv, unter
+  dem Standardort ein fremder Baum: die Bibliothek las dessen Konfiguration,
+  schrieb dort aus dessen Zweitschrift eine `zendure.json`, lud dessen
+  Sprachdatei und hielt dessen Upgrade-Marke für die eigene. Jetzt gibt es
+  ohne Wurzel keine — die Bibliothek arbeitet dann im eigenen Ordner, wie
+  im ausgepackten Archiv vorgesehen.
+- **Ein `$LBHOMEDIR` ohne `config/plugins` gilt nicht als Wurzel.** Bis
+  0.9.24 genügte ein beliebiges vorhandenes Verzeichnis, und ein nicht
+  vorhandenes blieb stehen, wenn die Suche nichts fand. Gemessen: mit
+  `$LBHOMEDIR` auf einem beliebigen Verzeichnis kamen Sprachdatei und
+  Oberflächensprache aus diesem Verzeichnis, auch aus der Anlage heraus.
+  Jetzt sucht die Bibliothek dann aufwärts und findet die eigene Anlage.
+- **`uninstall` löscht ohne Wurzel nichts mehr.** Ohne fünftes Argument und
+  ohne brauchbares `$LBHOMEDIR` rechnete es drei Ebenen über dem eigenen
+  Ablageort. Gemessen in einem fremden Baum ohne `general.json`: beide
+  Sicherungen mit dem Aktionstoken, der Bestandsordner und die
+  Upgrade-Marke dieses Baums wurden gelöscht, und das Skript meldete Erfolg.
+  Jetzt gilt wie in `bin/dienst.sh`: fünftes Argument, dann `$LBHOMEDIR` mit
+  `config/plugins` und `data/plugins`, dann die Suche aufwärts nach einem
+  Verzeichnis, das zusätzlich `config/system/general.json` trägt. Findet
+  keine Stufe etwas: `<WARNING>`, nichts beendet, nichts entfernt,
+  Rückgabe 1.
+- **`postinstall.sh` und `preupgrade.sh` folgen derselben Regel.**
+  `postinstall.sh` rechnete ohne fünftes Argument zwei Ebenen über dem
+  Tempordner — der Installer legt ihn unter `data/system/tmp/uploads/`
+  an, zwei Ebenen darüber ist `data/system/tmp`, keine Wurzel; die
+  Konfiguration der Anlage wurde dann nicht zurückgespielt, und in einem
+  fremden Baum legte das Skript Ordner und eine `zendure.json` an.
+  `preupgrade.sh` arbeitete ohne fünftes Argument mit leerer Wurzel, also
+  mit Pfaden, die bei `/data/` beginnen. Jetzt findet beides die Anlage auch
+  aus dem Tempordner heraus; ohne Wurzel legt keines etwas an
+  (`<FAIL>` bzw. `<WARNING>`, Rückgabe 1). Der zweite Wurzelweg der
+  Zweitschrift `backup.zendure.json` nimmt dieselbe Wurzel.
 
 ## Version 0.9.24 — `bin/dienst.sh` liest die LoxBerry-Wurzel, statt sie zu raten
 

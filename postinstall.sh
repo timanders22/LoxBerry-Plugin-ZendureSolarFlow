@@ -11,13 +11,50 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-zendure}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
+# statt vollziehen; dieselbe Regel wie bin/dienst.sh):
+#   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel
+#      (plugininstall.pl:1158 und :1577, am Geraet nachgesehen 17.09.2026),
+#   2. $LBHOMEDIR, wenn darunter config/plugins und data/plugins liegen,
+#   3. vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+#      config/plugins, data/plugins UND config/system/general.json.
+# LoxBerry::System taugt hier nicht: es leitet den Pluginordner aus dem
+# Aufrufort ab und liefert aus postinstall.sh heraus ueberall Leerstring.
+# Dieses Skript laeuft im Tempordner <home>/data/system/tmp/uploads/<name>
+# (plugininstall.pl:343); Stufe 3 findet von dort <home>. Bis 0.9.24 stand
+# hier "zwei Ebenen ueber dem Tempordner" - das ist <home>/data/system/tmp,
+# keine Wurzel - und ein beliebiges Verzeichnis in $LBHOMEDIR galt als
+# Wurzel. In WSL gemessen (Pruefung-ZendureSolarFlow-0.9.25/messe_haken.sh,
+# Faelle I1, I2, I4): Ordner und zendure.json in einem fremden Baum bzw. im
+# beliebigen Verzeichnis angelegt, die Konfiguration der Anlage nicht
+# zurueckgespielt. Ohne Wurzel wird jetzt nichts angelegt.
+zd_wurzel_suchen() {
+    zd_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    zd_i=0
+    while [ -n "$zd_v" ] && [ "$zd_v" != "/" ] && [ "$zd_i" -lt 8 ]; do
+        if [ -d "$zd_v/config/plugins" ] && [ -d "$zd_v/data/plugins" ] \
+           && [ -f "$zd_v/config/system/general.json" ]; then
+            echo "$zd_v"
+            return 0
+        fi
+        zd_v=$(dirname "$zd_v")
+        zd_i=$((zd_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    # Ableitung aus dem eigenen Ablageort - LoxBerry::System taugt hier nicht,
-    # weil es den Pluginordner aus dem Aufrufort ableitet und aus
-    # postinstall.sh heraus ueberall Leerstring liefert.
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(zd_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - es wurde nichts angelegt"
+    echo "<FAIL> und keine Konfiguration zurueckgespielt."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
@@ -173,7 +210,10 @@ echo "<INFO> Dienst im Reiter Einstellungen starten."
 #
 # Eine gueltige Konfiguration wird NIE ueberschrieben. Eine Sicherung, die
 # echte Einstellungen ersetzt, waere schlimmer als gar keine.
-NETZ_BASE="${5:-$LBHOMEDIR}"
+# Dieselbe Wurzel wie oben (bis 0.9.24 hier eigens "${5:-$LBHOMEDIR}";
+# ohne fuenftes Argument fehlte dann die Wurzel, Fall I5 bzw. V4b in
+# Pruefung-ZendureSolarFlow-0.9.25/messe_haken.sh).
+NETZ_BASE="$BASE"
 NETZ_PDIR="${3:-zendure}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 netz_zurueck() {
