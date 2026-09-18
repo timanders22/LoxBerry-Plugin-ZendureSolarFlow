@@ -38,11 +38,18 @@ if (!function_exists('zd_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json enthaelt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json unterscheidet einen LoxBerry von einem fremden Baum oder einem
+ * Rest aus Pruefstaenden (Regeln/06, Wurzelsuche). Bis 0.9.23 fehlte die
+ * Bedingung: in WSL gemessen (Pruefung-ZendureSolarFlow-0.9.24, Fall P1)
+ * hielt zd_paths() einen Baum mit config/plugins und webfrontend, aber ohne
+ * general.json fuer die Wurzel; alle Pfade der Oberflaeche zeigten damit in
+ * dessen config/, data/ und log/ (gelesen, nicht einzeln gemessen).
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -52,7 +59,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -1652,8 +1660,11 @@ function zd_dienst_soll()
  * Werkzeug hat, das sie findet (CLAUDE.md, Abschnitt 6).
  *
  * Sie urteilt genauso wie marke_gilt() in bin/dienst.sh: ohne Zeitpunkt,
- * aelter als 3600 s oder aus der Zukunft gilt die Marke nicht. Den Fall
- * "keine lesbare Uhr" gibt es hier nicht - time() liefert immer etwas.
+ * aelter als 3600 s oder mehr als 300 s aus der Zukunft gilt die Marke
+ * nicht. Die 300 s Vorlauf: die Uhr kann nach dem Setzen ein Stueck
+ * zurueckspringen (in WSL gemessen bis 0,64 s; Fall M5 in
+ * Pruefung-ZendureSolarFlow-0.9.24). Den Fall "keine lesbare Uhr" gibt es
+ * hier nicht - time() liefert immer etwas.
  *
  * Die Oberflaeche wird bei liegender Marke NICHT gesperrt. Das ist eine
  * Messung, keine Regel (Regeln/06, Nachtrag 17.09.2026): am 18.09.2026 in
@@ -1675,7 +1686,7 @@ function zd_marke()
     }
     $alter = time() - (int) $roh;
     return array('da' => 1, 'alter' => $alter,
-                 'gilt' => ($alter >= 0 && $alter < 3600) ? 1 : 0, 'pfad' => $f);
+                 'gilt' => ($alter >= -300 && $alter < 3600) ? 1 : 0, 'pfad' => $f);
 }
 
 /**

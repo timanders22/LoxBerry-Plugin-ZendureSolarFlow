@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.23 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.24 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,75 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.24 — `bin/dienst.sh` liest die LoxBerry-Wurzel, statt sie zu raten
+
+Alles in diesem Abschnitt ist nachgestellt und gemessen (18.09.2026, WSL
+Ubuntu). Der Prüfstand liegt unter `Pruefung-ZendureSolarFlow-0.9.24/`:
+38 Fälle, vorher 15 rot, nachher 0; jede der 21 Korrekturen einzeln
+zurückgebaut macht genau ihre Fälle wieder rot. **Am Gerät ist nichts
+nachgemessen.** Geändert sind nur `bin/dienst.sh` und
+`webfrontend/html/zd_lib.php`.
+
+- **Ein gesetztes `$LBHOMEDIR` gilt wieder.** Bis 0.9.23 rechnete
+  `bin/dienst.sh` die Wurzel immer als „drei Ebenen über dem eigenen
+  Ablageort“ und überschrieb damit, was LoxBerry vorgibt; der Ordnername war
+  stets der Name des Ordners, in dem das Skript lag. Jetzt gilt der Reihe
+  nach: `$LBHOMEDIR`, wenn dort `config/plugins` und `data/plugins` liegen;
+  sonst die Suche aufwärts nach einem Verzeichnis, das zusätzlich
+  `config/system/general.json` trägt. Der Ordnername kommt aus
+  `$LBPPLUGINDIR`, sonst wie bisher aus dem Ablageort. Auf einer regulären
+  Installation ergibt das dieselben Pfade wie vorher — mit und ohne
+  `$LBHOMEDIR`, auch über einen Verweis auf die Wurzel.
+- **Ohne LoxBerry-Wurzel tut `bin/dienst.sh` nichts mehr.** Findet es weder
+  über `$LBHOMEDIR` noch über die Suche eine Wurzel, meldet es einen Fehler
+  und endet, bevor es etwas anlegt, startet oder anhält — Rückgabe 1, bei
+  `status` 4 („Zustand unbekannt“, zu unterscheiden von 1 = gestoppt). Die
+  alte Rechnung „drei Ebenen über dem Ablageort“ gibt es nicht mehr als
+  Rückfall. Gemessen in einem fremden Baum mit `bin/plugins/zendure`,
+  `config/plugins` und `data/plugins`, aber ohne `general.json` und ohne
+  `$LBHOMEDIR`: mit dem Rückfall hielt das Skript diesen Baum für die
+  Wurzel, `start` legte dort neun Einträge an und startete den Dienst, `stop`
+  löschte dessen `soll_laufen`, und der Cron-Wächter startete den Dienst
+  dort ebenfalls. Jetzt: kein Prozess, nichts angelegt, nichts
+  gelöscht; der Wächter schreibt ohne Wurzel in keine Datei. Ein LoxBerry
+  hat immer `config/system/general.json`; dort ändert sich nichts.
+- **Die Oberfläche erkennt einen fremden Baum ebenfalls nicht mehr als
+  Wurzel.** `lb_wurzel_ermitteln()` in `webfrontend/html/zd_lib.php` nahm
+  das erste Verzeichnis mit `config/plugins` und `webfrontend`; jetzt muss
+  es auch `config/system/general.json` tragen. Gemessen: im fremden Baum
+  lieferte `zd_paths()` diesen Baum als Wurzel, jetzt keine. Danach greift
+  wie bisher der feste Standardort eines LoxBerry und, wo es den nicht
+  gibt, der Betrieb im ausgepackten Archiv — beides unverändert.
+- **Aufrufe legen keine Ordner mehr an, die niemand wollte.** Bis 0.9.23
+  stand ein `mkdir -p` für Daten-, Protokoll- und Bestandsordner auf
+  oberster Ebene, lief also bei **jedem** Aufruf, auch bei `status`. Gemessen:
+  ein `status` aus einem ausgepackten Archiv unterhalb einer LoxBerry-Wurzel
+  legte in der **laufenden Anlage** `data/plugins/bin`,
+  `data/plugins/bin.bestand` und `log/plugins/bin` an; ein `status` in der
+  Upgrade-Lücke legte den eben abgeräumten Datenordner wieder an. Angelegt
+  wird jetzt nur noch beim Start — und erst **nach** der Prüfung der
+  Upgrade-Marke —, vom Wächter vor seiner Protokollzeile (der Protokollordner
+  liegt auf der RAM-Platte und kann fehlen) und für die Sperrdatei bei
+  `start`, `restart` und `waechter`. `status` auf einer frischen Anlage sagt
+  „gestoppt“ ohne `<WARNING>`.
+- **Aus einem Archiv heraus wird nichts gestartet.** Liegt `dienst.sh` nicht
+  im `bin`-Ordner der ermittelten Installation, verweigern `start`,
+  `restart` und der Wächter mit einer Fehlermeldung; `restart` hält dann auch
+  den Dienst der Anlage nicht an, und der Wächter schreibt keine Zeile in
+  deren Protokoll. Der Umzug eines Sollmerkers aus Fassungen vor 0.9.9
+  geschieht ebenfalls nur aus der Installation. `status` darf von überall
+  fragen und sieht bei gesetzter Umgebung den Dienst der Anlage.
+- **Die Upgrade-Marke verträgt einen kleinen Uhrsprung.** Eine Marke, deren
+  Zeitpunkt bis zu 300 Sekunden in der Zukunft liegt, gilt jetzt — in
+  `bin/dienst.sh` wie in der Anzeige des Reiters Test (`zd_marke()`). Die
+  Uhr kann nach dem Setzen der Marke ein Stück zurückspringen (in WSL bis
+  0,64 s gemessen); bis 0.9.23 galt eine eben geschriebene Marke dann nicht,
+  und der Minutentakt hätte den Dienst mitten in der Aktualisierung
+  gestartet. Weiter in der Zukunft, älter als eine Stunde oder ohne
+  Zeitpunkt gilt sie wie bisher nicht; liefert `date` in `bin/dienst.sh`
+  keine Zahl, gilt sie. Der Markeninhalt wird weiterhin vor jeder Rechnung
+  als Zahl geprüft.
 
 ## Version 0.9.23 — der Dienst startet nicht mitten in einer Aktualisierung
 
