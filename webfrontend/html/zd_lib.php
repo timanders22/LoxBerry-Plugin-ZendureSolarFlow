@@ -349,6 +349,123 @@ function zd_json_schreiben($pfad, $daten, $rechte = null)
 }
 
 /**
+ * Traegt diese Datei ueberhaupt etwas?
+ *
+ * Nicht "ist sie leer?", sondern "laesst sie sich als JSON-Objekt mit
+ * mindestens einem Schluessel lesen?". Der Unterschied ist gemessen
+ * (18.09.2026, WSL, Bestand-2026-09-18/klasse-A/Ergebnis.md): eine
+ * ABGESCHNITTENE zendure.json - weder leer noch "{}", aber fuer json_decode
+ * unbrauchbar - ging bis 0.9.22 an der Selbstheilung in zd_config() vorbei.
+ * zd_json_lesen() gab daraus array(), zd_config() die blanken Vorgaben,
+ * zd_token() wuerfelte ein NEUES Aktionstoken und zd_config_speichern()
+ * schrieb es samt Zweitschrift. Damit war das alte Token in BEIDEN Dateien
+ * fort, und jeder virtuelle Eingang im Miniserver bekam HTTP 403.
+ * Messzeile des Bestandslaufs, Fall "kaputt":
+ *   [ROT] Konfiguration traegt altes Token: NEIN (erwartet JA)
+ *   [ROT] Zweitschrift traegt altes Token: NEIN (erwartet JA)
+ *
+ * Bauart: sp_inhalt_oder_null() aus Sprachsteuerung 0.11.7, dort aus
+ * Intercom 2.2.11 uebernommen.
+ *
+ * Rueckgabe: die gelesenen Daten oder null, wenn die Datei nichts traegt.
+ */
+function zd_inhalt_oder_null($pfad)
+{
+    if (!is_file($pfad)) {
+        return null;
+    }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') {
+        return null;
+    }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || $d === array()) {
+        return null;
+    }
+    return $d;
+}
+
+/**
+ * Traegt diese Konfiguration das, was nur sie tragen kann?
+ *
+ * Das Aktionstoken. Es steht in JEDER Loxone-Adresse dieses Plugins (Reiter
+ * "Einbindung in Loxone"); geht es verloren, scheitern saemtliche virtuellen
+ * Eingaenge, und es laesst sich nicht zurueckrechnen. Alles andere - auch das
+ * Broker-Passwort - laesst sich in der Oberflaeche noch einmal eintragen.
+ *
+ * Eine Konfiguration OHNE Token gibt es auf keinem Weg der Oberflaeche:
+ * zd_token() fuellt es beim ersten Seitenaufbau. Steht dort keines, ist die
+ * Datei nicht aus einem gespeicherten Stand hervorgegangen - dann wird aus
+ * der Zweitschrift geheilt, statt ein neues Token zu wuerfeln.
+ */
+function zd_config_hat_inhalt($c)
+{
+    return is_array($c) && $c !== array()
+        && trim((string) (isset($c['aktionstoken']) ? $c['aktionstoken'] : '')) !== '';
+}
+
+/**
+ * Was die Zweitschrift traegt und der neue Stand nicht.
+ *
+ * Leere Rueckgabe heisst: die Zweitschrift darf erneuert werden. Verglichen
+ * wird je Feld, ob der neue Stand es ueberhaupt fuehrt - eine bewusst
+ * geleerte Angabe ist ein gewolltes Loeschen und wird nachgezogen; ein
+ * fehlendes Aktionstoken heisst dagegen, der neue Stand ist gar nicht aus dem
+ * gespeicherten hervorgegangen. Geprueft wird deshalb NUR das Aktionstoken:
+ * ein Feld, das der Bediener leeren darf (broker_pw), wuerde hier bei jedem
+ * Speichern eine Warnung erzeugen, und ein Fehlalarm bei jedem Lauf ist eine
+ * abgeschaltete Pruefung (CLAUDE.md, Abschnitt 6).
+ *
+ * Bauart: sp_zweitschrift_fehlt() aus Sprachsteuerung 0.11.7.
+ */
+function zd_zweitschrift_fehlt($sicherung, array $neu, array $felder)
+{
+    $z = zd_inhalt_oder_null($sicherung);
+    if ($z === null) {
+        return array();
+    }
+    $fehlt = array();
+    foreach ($felder as $feld) {
+        if (!array_key_exists($feld, $z)) {
+            continue;
+        }
+        $hat_z = is_string($z[$feld]) ? (trim($z[$feld]) !== '') : !empty($z[$feld]);
+        if (!$hat_z) {
+            continue;
+        }
+        $hat_n = array_key_exists($feld, $neu)
+               && (is_string($neu[$feld]) ? (trim($neu[$feld]) !== '') : true);
+        if (!$hat_n) {
+            $fehlt[] = $feld;
+        }
+    }
+    return $fehlt;
+}
+
+/**
+ * Die Zweitschrift erneuern - oder begruendet nicht.
+ *
+ * Die Zweitschrift ist der EINZIGE Rueckweg zum Aktionstoken. Sie wird nie
+ * mit einem Stand ueberschrieben, der das Geheimnis nicht traegt. Das
+ * Speichern selbst wird dadurch nicht verhindert - nur der Rueckweg bleibt
+ * stehen, und das Protokoll sagt es.
+ */
+function zd_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rechte = null)
+{
+    $fehlt = zd_zweitschrift_fehlt($ziel, $neu, $felder);
+    if ($fehlt) {
+        zd_log('WARNUNG: Die Zweitschrift bleibt unveraendert - der gespeicherte Stand '
+            . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
+        return false;
+    }
+    @copy($quelle, $ziel);
+    if ($rechte !== null) {
+        @chmod($ziel, $rechte);
+    }
+    return true;
+}
+
+/**
  * Was fehlt, was ist fremd?
  *
  * zd_config() ergaenzt Fehlendes bei JEDEM Lesen ueber array_merge() - im
@@ -398,6 +515,19 @@ function zd_cfg_lage()
 function zd_cfg_vervollstaendigen()
 {
     $p = zd_paths();
+    /* ZUERST lesen wie die Oberflaeche - sonst geht dieser Weg an der
+     * Selbstheilung vorbei.
+     *
+     * Gemessen 18.09.2026 (Pruefung-ZendureSolarFlow-0.9.22, Fall
+     * "dienst_erg"): bin/zendure_dienst.php:2122 ruft diese Funktion beim
+     * Dienststart auf, und zwar VOR jedem zd_config(). Bei einer
+     * abgeschnittenen Konfiguration gab zd_json_lesen() array(), es galten
+     * alle 30 Schluessel als fehlend, und die Funktion schrieb die blanken
+     * Vorgaben ueber die Datei - das Aktionstoken war fort, bevor die Heilung
+     * ueberhaupt zum Zuge kam:
+     *   [ROT] Konfiguration traegt das Token (Dienstweg): NEIN (erwartet JA)
+     * Der Aufruf von zd_config() heilt jetzt vorher aus der Zweitschrift. */
+    zd_config();
     $lage = zd_cfg_lage();
     if (!$lage['fehlend']) {
         return array(1, 0, 'Es fehlte nichts.');
@@ -406,25 +536,79 @@ function zd_cfg_vervollstaendigen()
     if (!is_array($datei)) {
         $datei = array();
     }
+    /* Liess sich nicht heilen, traegt die Datei also weiterhin kein
+     * Aktionstoken, wird hier NICHTS geschrieben. Sonst legte dieser Weg die
+     * Vorgaben ueber den abgeschnittenen Stand und machte ihn unlesbar, ohne
+     * dass jemand das Token noch von Hand herausholen koennte. */
+    if (!zd_config_hat_inhalt($datei)) {
+        return array(0, 0, 'Die Konfiguration traegt kein Aktionstoken - sie wird nicht '
+                         . 'vervollstaendigt. Der vorherige Inhalt liegt unter '
+                         . $p['config'] . '.kaputt.');
+    }
     $vorgaben = zd_vorgaben();
     foreach ($lage['fehlend'] as $k) {
         $datei[$k] = $vorgaben[$k];
     }
-    if (!zd_json_schreiben($p['config'], $datei)) {
+    /* 0600, nicht die Vorgaben der umask: in der Konfiguration steht das
+     * Broker-Passwort im Klartext. zd_json_schreiben() legt eine NEUE
+     * Nebendatei an und benennt sie um - ohne diesen Wert stand die Datei
+     * danach auf 0644 (gemessen 18.09.2026, Fall "dienst_erg": 644 statt
+     * 600), obwohl zd_config_speichern() sie seit je auf 0600 haelt. */
+    if (!zd_json_schreiben($p['config'], $datei, 0600)) {
         return array(0, 0, 'Die Konfiguration liess sich nicht schreiben.');
     }
+    zd_zweitschrift_ziehen($p['config'], $p['sicherung'], $datei,
+                           array('aktionstoken'), 0600);
     return array(1, count($lage['fehlend']),
                  'Ergaenzt: ' . implode(', ', $lage['fehlend']));
 }
 
-function zd_config()
+/**
+ * Die Konfiguration lesen.
+ *
+ * $erzeugen = false schaltet JEDEN Schreibvorgang ab. So ruft der
+ * unangemeldete Endpunkt auf (webfrontend/html/index.php): wer sich nicht
+ * ausweisen kann, legt nichts an und stellt nichts wieder her - auch nichts
+ * Harmloses. Gemessen 18.09.2026: mit "{}" in der Datei schrieb ein einziger
+ * Aufruf des Endpunkts die Konfiguration aus der Zweitschrift neu
+ * ("unangemeldeter Endpunkt heilt die leere Konfiguration NICHT: ANDERS").
+ *
+ * Geheilt wird nach INHALT (zd_inhalt_oder_null(), zd_config_hat_inhalt()),
+ * nicht nach Form, und nur aus einer Zweitschrift, die selbst Inhalt traegt:
+ * ein Stand ohne Aktionstoken darf keinen anderen ersetzen - in keine der
+ * beiden Richtungen. Was vorher in der Datei stand, wird nicht weggeworfen,
+ * sondern liegt als <datei>.kaputt daneben (0600 - darin steht das
+ * Broker-Passwort).
+ */
+function zd_config($erzeugen = true)
 {
     $p = zd_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
+    if ($erzeugen && !zd_config_hat_inhalt(zd_inhalt_oder_null($p['config']))) {
+        /* Der vorherige Inhalt bleibt erhalten, auch wenn es nichts zu heilen
+         * gibt: ohne Zweitschrift ist die abgeschnittene Datei das Einzige,
+         * woraus sich das alte Token noch von Hand herauslesen laesst. */
+        $alt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+        $rest = preg_replace('/\s+/', '', $alt);
+        $hat_alt = ($rest !== '' && $rest !== '{}' && $rest !== '[]');
+        if ($hat_alt) {
+            @copy($p['config'], $p['config'] . '.kaputt');
+            @chmod($p['config'] . '.kaputt', 0600);
+        }
+        if (zd_config_hat_inhalt(zd_inhalt_oder_null($p['sicherung']))) {
+            @mkdir($p['configdir'], 0775, true);
+            if (@copy($p['sicherung'], $p['config'])) {
+                @chmod($p['config'], 0600);
+                zd_log_gebremst('heilung',
+                    'Die Konfiguration trug kein Aktionstoken und wurde aus der Zweitschrift '
+                    . 'wiederhergestellt: ' . $p['sicherung']
+                    . ($hat_alt ? ' (der vorherige Inhalt liegt unter '
+                                . $p['config'] . '.kaputt)' : '') . '.');
+            }
+        } elseif ($hat_alt) {
+            zd_log_gebremst('kaputt_ohne_zweitschrift',
+                'Die Konfiguration trug kein Aktionstoken, und es gibt keine Zweitschrift '
+                . 'mit Inhalt. Der vorherige Inhalt liegt unter ' . $p['config'] . '.kaputt.');
+        }
     }
     return array_merge(zd_vorgaben(), zd_json_lesen($p['config']));
 }
@@ -458,8 +642,12 @@ function zd_config_speichern($cfg)
     if (!zd_json_schreiben($p['config'], $cfg, 0600)) {
         return false;
     }
-    @copy($p['config'], $p['sicherung']);
-    @chmod($p['sicherung'], 0600);
+    /* Die Zweitschrift wird NICHT erneuert, wenn der neue Stand das
+     * Aktionstoken nicht traegt, das dort steht. Sie ist der einzige
+     * Rueckweg; ein Stand ohne Geheimnis darf ihn nicht ueberschreiben.
+     * Gespeichert wird trotzdem - nur der Rueckweg bleibt stehen. */
+    zd_zweitschrift_ziehen($p['config'], $p['sicherung'], (array) $cfg,
+                           array('aktionstoken'), 0600);
     return true;
 }
 
@@ -596,6 +784,12 @@ function zd_mqtt_thema_teil($v)
  */
 function zd_formtoken()
 {
+    /* MIT Heilung, anders als im unangemeldeten Endpunkt: diese Funktion
+     * wird ausschliesslich aus webfrontend/htmlauth/index.php:95 gerufen,
+     * und zwar als erstes, vor jedem Handler. Wuerde sie hier nicht heilen,
+     * bekaeme der Bediener nach einer beschaedigten Datei beim ersten Klick
+     * eine Abweisung ("kein Merkmal"), obwohl die Zweitschrift danebenliegt -
+     * geheilt wuerde erst beim uebernaechsten Seitenaufbau. */
     $cfg = zd_config();
     $t = trim((string) $cfg['aktionstoken']);
     if ($t === '') {

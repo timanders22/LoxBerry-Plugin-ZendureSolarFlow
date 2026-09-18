@@ -155,12 +155,42 @@ starten() {
     return 1
 }
 
+# Herrenlose Horcher einsammeln - argumentweise, nicht mit "pkill -f".
+#
+# "pkill -f" durchsucht die GANZE Befehlszeile als Teilzeichenkette und
+# trifft damit jeden fremden Prozess, der die Zeichenkette irgendwo fuehrt.
+# Gemessen 18.09.2026 (Bestand-2026-09-18/klasse-F-nachmessung): das lose
+# Muster in Zeile 182 dieser Datei ("mosquitto_sub .*$PNAME") beendete den
+# Horcher der ZWEITEN Installation zendure_01 - "angehalten" ->
+# "nachher: Koeder 35662 IST TOT". Der Kommentar sieben Zeilen weiter unten
+# verspricht seit je das Gegenteil.
+#
+# Verglichen wird deshalb argv[0] (muss mosquitto_sub sein) gegen ein GANZES
+# Argument "loxberry-<ordner>-<nummer>" - genau so vergibt
+# zd_horcher_starten() die Kennung (bin/zendure_dienst.php). "loxberry-
+# zendure_01-9911" ist damit kein Treffer fuer den Ordner "zendure", weil
+# hinter dem Ordnernamen ein Unterstrich steht und kein Bindestrich.
+# Zusaetzlich muss der Prozess dem eigenen Benutzer gehoeren.
+horcher_einsammeln() {
+    ORD=$1
+    UID_SOLL=$(id -u)
+    for D in /proc/[0-9]*; do
+        [ -r "$D/cmdline" ] || continue
+        A0=$(tr '\0' '\n' < "$D/cmdline" 2>/dev/null | sed -n '1p')
+        [ "${A0##*/}" = "mosquitto_sub" ] || continue
+        [ "$(stat -c %u "$D" 2>/dev/null)" = "$UID_SOLL" ] || continue
+        tr '\0' '\n' < "$D/cmdline" 2>/dev/null \
+            | grep -qxE "loxberry-$ORD-[0-9]+" || continue
+        kill "${D#/proc/}" 2>/dev/null
+    done
+}
+
 anhalten() {
     rm -f "$SOLL"
     if ! laeuft; then
         rm -f "$PID"
         # Herrenlose Horcher trotzdem einsammeln
-        pkill -f "mosquitto_sub .*loxberry-$PNAME-" 2>/dev/null
+        horcher_einsammeln "$PNAME"
         echo "laeuft nicht"
         return 0
     fi
@@ -179,7 +209,7 @@ anhalten() {
         sleep 1
     fi
     rm -f "$PID"
-    pkill -f "mosquitto_sub .*$PNAME" 2>/dev/null
+    horcher_einsammeln "$PNAME"
     echo "angehalten"
     return 0
 }

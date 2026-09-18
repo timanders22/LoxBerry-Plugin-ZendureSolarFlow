@@ -51,7 +51,15 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/zd_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$zd_cfg = zd_config();
+/* zd_config(false): der unangemeldete Endpunkt legt nichts an und stellt
+ * nichts wieder her. Bis 0.9.22 rief er zd_config() ohne Schalter - und die
+ * Selbstheilung darin schrieb. Gemessen 18.09.2026 (Pruefstand
+ * Pruefung-ZendureSolarFlow-0.9.22, Fall "endpunkt_leer"): bei einer
+ * Konfiguration "{}" schrieb ein einziger Aufruf dieses Endpunkts die Datei
+ * aus der Zweitschrift neu, noch bevor das Token geprueft war. Wer sich nicht
+ * ausweisen kann, soll am Dateisystem nichts bewegen; geheilt wird in der
+ * angemeldeten Oberflaeche und beim Dienststart. */
+$zd_cfg = zd_config(false);
 
 /* ---------------- Token ---------------- */
 $zd_soll = (string) $zd_cfg['aktionstoken'];

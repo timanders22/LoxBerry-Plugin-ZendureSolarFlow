@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.21 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.22 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,82 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.22 — das Aktionstoken übersteht eine halb geschriebene Datei
+
+Alles in diesem Abschnitt ist nachgestellt und gemessen (18.09.2026, WSL,
+PHP 8.3.6 und Windows-PHP 7.4.33); die Prüfstände liegen unter
+`Pruefung-ZendureSolarFlow-0.9.22/`.
+
+- **Die Selbstheilung entscheidet nach Inhalt, nicht nach Form.** Bis 0.9.22
+  sprang sie nur an, wenn `zendure.json` fehlte, leer war oder genau `{}`
+  enthielt. Eine **halb geschriebene** Datei — nach einem Stromausfall, bei
+  vollem Dateisystem oder nach einer Handbearbeitung — ist nichts davon: sie
+  ist vorhanden, nicht leer, aber für den JSON-Leser unbrauchbar. Das Plugin
+  las daraufhin die blanken Vorgaben, **würfelte ein neues Aktionstoken** und
+  schrieb es samt Zweitschrift. Damit war das alte Token in beiden Dateien
+  fort, und **jeder virtuelle Eingang im Miniserver bekam HTTP 403**.
+  Jetzt gilt eine Konfiguration nur dann als brauchbar, wenn sie sich als
+  JSON-Objekt lesen lässt **und** ein Aktionstoken führt.
+
+- **Geheilt wird nur aus einer Zweitschrift, die selbst ein Token trägt**, und
+  die Zweitschrift wird nie mehr mit einem Stand überschrieben, der keines
+  hat. Das Speichern selbst wird dabei nicht verhindert — nur der einzige
+  Rückweg bleibt stehen, und das Protokoll sagt es.
+
+- **Der verdrängte Stand geht nicht verloren.** Was vorher in der Datei
+  stand, liegt danach als `zendure.json.kaputt` daneben, mit Rechten 0600 —
+  es kann das Broker-Passwort darin stehen. Auch dann, wenn es gar keine
+  Zweitschrift gibt: die abgeschnittene Datei ist sonst das Einzige, woraus
+  sich ein altes Token noch von Hand herauslesen ließe.
+
+- **Der Dienststart kann das Token nicht mehr verlieren.** Beim Start
+  vervollständigt der Dienst die Konfiguration um fehlende Schlüssel. Diese
+  Funktion las die Datei bisher an der Selbstheilung **vorbei**: bei einer
+  halb geschriebenen Datei galten alle 30 Schlüssel als fehlend, und sie
+  schrieb die reinen Vorgabewerte darüber. Jetzt heilt sie zuerst, und ohne
+  lesbares Token schreibt sie gar nichts. Nebenbei behoben: die Datei stand
+  nach diesem Weg auf 0644 statt 0600, obwohl das Broker-Passwort darin
+  steht.
+
+- **Der unangemeldete Endpunkt legt nichts mehr an.** `index.php` im
+  offenen Bereich stellte bisher eine leere Konfiguration aus der
+  Zweitschrift wieder her — noch bevor das Token geprüft war. Wer sich nicht
+  ausweisen kann, bewegt jetzt nichts mehr am Dateisystem; geheilt wird in
+  der angemeldeten Oberfläche und beim Dienststart.
+
+- **`preupgrade.sh` sichert die Einstellungen nur noch, wenn ein Token darin
+  steht.** Bisher kopierte es die Konfiguration bedingungslos über die
+  Zweitschrift; eine halb geschriebene Datei hätte beim nächsten Update den
+  letzten Rückweg überschrieben.
+
+### Wer beim Anhalten ein Signal bekommt
+
+- **Kein `kill` mehr auf eine ungeprüfte Nummer.** `preupgrade.sh` beendete
+  die Nummer aus `dienst.pid` ohne jede Prüfung — auch `kill -9`.
+  Prozessnummern werden wiederverwendet; nachgestellt starb ein völlig
+  fremder Prozess. Geprüft wird jetzt argumentweise über `/proc`: das erste
+  Argument muss ein PHP sein, das zweite genau das eigene Dienstskript, und
+  der Prozess muss dem Dienstbenutzer gehören. Vor dem `kill -9` wird erneut
+  nachgesehen.
+
+- **Ein Dienst ohne PID-Datei wird jetzt gefunden.** Lief der Abrufdienst an
+  der PID-Datei vorbei, überlebte er bisher das Upgrade — mit offener
+  Warteschlange und offenem MQTT-Horcher. `preupgrade.sh` sucht ihn jetzt
+  mit derselben strengen Prüfung.
+
+- **Herrenlose MQTT-Horcher werden argumentweise eingesammelt, nicht mit
+  `pkill -f`.** `pkill -f` durchsucht die ganze Befehlszeile als
+  Teilzeichenkette und traf damit jeden fremden Prozess, der die Zeichenkette
+  irgendwo führte. Schwerer wog das zu lose Muster in `bin/dienst.sh`: ein
+  „Dienst anhalten" in der Installation `zendure` erschlug den Horcher der
+  **zweiten Installation** `zendure_01` gleich mit — die las danach bis zu
+  ihrem nächsten Dienstneustart kein MQTT mehr. Verglichen wird jetzt das
+  erste Argument (`mosquitto_sub`) gegen ein **ganzes** Argument
+  `loxberry-<ordner>-<nummer>`, dazu der Benutzer.
+
+**Nicht gemessen:** nichts davon ist auf echter Hardware nachgestellt; alle
+Messungen stammen aus einem nachgebauten Baum unter WSL.
 
 ## Version 0.9.21 — die MQTT-Kachel zeigt das Plugin
 
