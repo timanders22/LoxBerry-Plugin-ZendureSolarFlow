@@ -97,6 +97,31 @@ for D in /proc/[0-9]*; do
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Dienst."
 
+# ---- 1b. Zurueckbehaltene MQTT-Themen leeren ----
+#
+# Seit 0.9.19 gehen Zustaende retained hinaus. Bis 0.9.25 blieben sie nach
+# dem Deinstallieren im Broker stehen, und nach jedem Neustart von Broker
+# oder Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-ZendureSolarFlow-0.9.26, Faelle U1-U6). NACH dem Anhalten des
+# Dienstes - sonst schriebe er die Werte gleich wieder hinein - und VOR dem
+# Loeschen der Ordner durch den Installer (Praefix, Geraetenummern und
+# bin/ sind hier noch da). Geleert wird ueber den Weg der Linie, den
+# UDP-Eingang des Gateways, und beim Broker nachgelesen, wo er sich fragen
+# laesst (zd_mqtt_leeren() in webfrontend/html/zd_lib.php). Als loxberry,
+# nicht als root; stdin geschlossen, damit su nie auf eine Eingabe wartet.
+ZD_DIENST_PHP="$BASE/bin/plugins/$PDIR/zendure_dienst.php"
+if command -v php >/dev/null 2>&1 && [ -f "$ZD_DIENST_PHP" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 60 php "$ZD_DIENST_PHP" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 60 php "$ZD_DIENST_PHP" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder zendure_dienst.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
+
 # ---- 2. Sicherungen mit dem Aktionstoken ----
 #
 # ES SIND ZWEI, NICHT EINE. preupgrade.sh legt seit 0.9.4 zusaetzlich eine
@@ -150,10 +175,9 @@ else
     echo "<INFO> Keine Upgrade-Marke vorhanden."
 fi
 
-echo "<WARNING> Im MQTT-Broker koennen Werte stehen bleiben."
-echo "<INFO> Das Plugin veroeffentlicht unter dem eingestellten Themenpraefix"
-echo "<INFO> (Vorgabe: zendure/...). Zum Aufraeumen: LoxBerry -> System ->"
-echo "<INFO> MQTT Gateway."
+echo "<INFO> Zurueckbehaltene MQTT-Themen unter einem FRUEHER eingestellten Praefix"
+echo "<INFO> oder eines laengst entfernten Geraets raeumt dieses Skript nicht ab."
+echo "<INFO> Nachsehen: mosquitto_sub -t '<praefix>/#' --retained-only"
 echo "<INFO> Der Speicher selbst bleibt unberuehrt und behaelt seine"
 echo "<INFO> zuletzt gesetzten Grenzen."
 exit 0

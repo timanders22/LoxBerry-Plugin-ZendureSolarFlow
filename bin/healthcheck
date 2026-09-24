@@ -33,14 +33,26 @@ date_default_timezone_set(@date_default_timezone_get() ?: 'Europe/Berlin');
  * Ablageort abgeleitet und ohne festen Systempfad. */
 $zd_self = dirname(__FILE__);
 $zd_name = basename($zd_self);
-$zd_home = dirname(dirname(dirname($zd_self)));
+/* Installiert oder Archiv entscheidet der eigene Ablageort: installiert liegt
+ * diese Datei unter <home>/bin/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin. Bis 0.9.25 wurden vier Kandidaten der Reihe nach probiert,
+ * die beiden installierten VOR der eigenen Bibliothek - aus einem Archiv
+ * unter / hiess das /webfrontend/html/plugins/bin/zd_lib.php ab der
+ * Laufwerkswurzel, und der vierte (<archiv>/../webfrontend/...) lag ohnehin
+ * ausserhalb des Archivs (in WSL gemessen, Pruefung-ZendureSolarFlow-0.9.26,
+ * Faelle T8/T9). bin/zendure_dienst.php und bin/healthcheck tragen denselben
+ * Block. */
+if (basename(dirname($zd_self)) === 'plugins') {
+    $zd_home = dirname(dirname(dirname($zd_self)));
+    $zd_kandidaten = array(
+        $zd_home . '/webfrontend/html/plugins/' . $zd_name . '/zd_lib.php',
+        $zd_home . '/webfrontend/htmlauth/plugins/' . $zd_name . '/zd_lib.php',
+    );
+} else {
+    $zd_kandidaten = array(dirname($zd_self) . '/webfrontend/html/zd_lib.php');
+}
 $zd_gefunden = false;
-foreach (array(
-    $zd_home . '/webfrontend/html/plugins/' . $zd_name . '/zd_lib.php',
-    $zd_home . '/webfrontend/htmlauth/plugins/' . $zd_name . '/zd_lib.php',
-    dirname($zd_self) . '/webfrontend/html/zd_lib.php',
-    dirname($zd_self) . '/../webfrontend/html/zd_lib.php',
-) as $zd_kandidat) {
+foreach ($zd_kandidaten as $zd_kandidat) {
     if (is_file($zd_kandidat)) {
         require_once $zd_kandidat;
         $zd_gefunden = true;

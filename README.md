@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.25 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.26 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,57 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.26 — Dienstaussagen nicht mehr zurückbehalten, Archiv hält nichts an, ohne Dienst wird nichts eingereiht
+
+Nachgestellt und gemessen am 24.09.2026 in WSL Ubuntu; der Prüfstand liegt
+unter `Pruefung-ZendureSolarFlow-0.9.26/`: 46 Fälle, vorher 27 rot, nachher
+0; jede Korrektur einzeln zurückgebaut macht ihre Fälle wieder rot. Gateway
+und Broker sind dort eine Attrappe. **Am Gerät ist nichts nachgemessen.**
+
+- **`ok` und `geraetN/online` gehen nicht mehr zurückbehalten hinaus.** Beide
+  sind Aussagen des Dienstes über sich selbst: `ok` rechnet er aus seiner
+  eigenen Empfangsmarke, `online` aus dem Alter seiner eigenen letzten Daten —
+  das Gerät meldet keines von beiden. Von 0.9.19 bis 0.9.25 blieb deshalb nach
+  dem Tod des Dienstes eine 1 im Broker stehen, und nach einem Neustart von
+  Broker oder Gateway las Loxone „in Ordnung“ von einem Dienst, der nicht mehr
+  lief. Der Preis: nach einem Neustart fehlen die beiden Werte bis zum
+  nächsten Senden. Den alten, zurückbehaltenen Wert räumt der Dienst ab: vor
+  dem gültigen Wert geht eine leere `retain`-Nutzlast an den UDP-Eingang des
+  Gateways. Ob der Altwert fort ist, fragt er beim Broker nach, angemeldet mit
+  `Brokeruser`/`Brokerpass` aus der `general.json`. Erst wenn der Broker es
+  bestätigt, setzt er den Merker `data/plugins/<ordner>/.mqtt_dienstaussage_geraeumt`.
+  Solange der Broker nicht zu fragen ist, wird bei jedem Senden abgeräumt.
+- **Die Deinstallation leert die zurückbehaltenen Themen dieses Plugins.**
+  Bis 0.9.25 blieben Ladezustände, Sollwerte und Zählerstände nach dem
+  Entfernen für immer im Broker. Jetzt geht je Thema die leere Nutzlast an
+  das Gateway, danach wird beim Broker nachgelesen. Was dort noch steht, geht
+  noch einmal hinaus, höchstens dreimal. Die Ausgabe nennt, was stehen blieb.
+  Ist der Broker nicht zu fragen, sagt sie „nicht nachgelesen“. **Grenze:**
+  der UDP-Eingang des Gateways verwirft unter Last Datagramme. Themen unter
+  einem früher eingestellten Präfix räumt die Deinstallation nicht ab, ebenso
+  wenig die Themen eines Geräts, das längst entfernt ist.
+- **`bin/dienst.sh stop` aus einem ausgepackten Archiv hält nichts mehr an.**
+  `start`, `restart` und der Wächter verweigerten das schon seit 0.9.24. Mit
+  gesetztem `$LBHOMEDIR`/`$LBPPLUGINDIR` hielt `stop` bis 0.9.25 den Dienst
+  der Anlage an, löschte deren `soll_laufen` und beendete deren Horcher.
+  Jetzt: Meldung, Rückgabe 1, nichts angehalten.
+- **Ohne laufenden Dienst wird kein Auftrag mehr eingereiht.** Die
+  Gerätesuche und die Knöpfe im Reiter Test reihten bis 0.9.25 auch ohne
+  Dienst ein. Die Seite wartete dann bis zu zehn Sekunden und meldete
+  „Die Suche läuft“. Der Auftrag lief erst beim nächsten Dienststart an,
+  ungefragt und womöglich Stunden später. Jetzt kommt sofort die Meldung,
+  dass der Dienst nicht läuft, so wie am Loxone-Endpunkt schon bisher.
+  Außerdem verwirft der Dienst beim Start jeden Auftrag, der älter als 60 s
+  ist, und schreibt das ins Protokoll.
+- **Ohne LoxBerry-Wurzel werden nur die eigenen Dateien gelesen.** Aus einem
+  ausgepackten Archiv heraus fragte die Bibliothek Pfade ab der
+  Laufwerkswurzel ab. Das betraf die Sprachdateien unter
+  `/templates/plugins/html/lang` und `/libs/phplib/loxberry_log.php`. Die
+  Oberfläche, der Dienst und `bin/healthcheck` suchten ihre Bibliothek zuerst
+  außerhalb des Archivs, bis hinauf nach `/`. Lag dort eine Datei, wurde sie
+  gelesen oder ausgeführt. Jetzt entscheidet der eigene Ablageort: unter
+  `…/plugins/<ordner>` gilt die Installation, sonst das Archiv selbst.
 
 ## Version 0.9.25 — ohne LoxBerry-Wurzel kein Rückfall mehr, auch nicht in Oberfläche und Hakenskripten
 

@@ -400,7 +400,19 @@ fi
 
 case "$1" in
     start)   starten ;;
-    stop)    anhalten ;;
+    stop)
+        # Aus einem Archiv heraus haelt "stop" nichts an - wie "start",
+        # "restart" und der Waechter. Bis 0.9.25 hielt ein "stop" aus einem
+        # ausgepackten Archiv mit gesetztem $LBHOMEDIR/$LBPPLUGINDIR den
+        # Dienst der Anlage an, loeschte deren soll_laufen und sammelte deren
+        # Horcher ein (in WSL gemessen, Pruefung-ZendureSolarFlow-0.9.26,
+        # Faelle S1-S5).
+        if [ "$INSTALLIERT" != "1" ]; then
+            echo "FEHLER: dieses Skript liegt nicht unter $PBIN -"
+            echo "FEHLER: aus einem ausgepackten Archiv wird nichts angehalten."
+            exit 1
+        fi
+        anhalten ;;
     restart)
         # Aus einem Archiv heraus haelt "restart" nichts an: sonst stuende
         # der Dienst der Anlage danach, weil starten() dort verweigert

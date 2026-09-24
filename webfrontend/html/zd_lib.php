@@ -1833,6 +1833,19 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
      * steht im Protokoll. */
     $wartezeit = max(0, min(ZD_WARTEN_WEB, (int) $wartezeit));
 
+    /* Ohne laufenden Dienst wird nichts eingereiht - dieselbe Absage wie am
+     * Endpunkt (webfrontend/html/index.php, 503). Bis 0.9.25 reihten die
+     * Geraetesuche und die Knoepfe des Reiters Test auch ohne Dienst ein:
+     * die Seite wartete bis zu zehn Sekunden, meldete danach "Die Suche
+     * laeuft", und der Auftrag blieb liegen, bis irgendwann ein Dienst
+     * startete und ihn ungefragt ausfuehrte. Gefunden von
+     * Werkzeuge/wirkungstest.py (je Suchknopf eine neue Datei in befehle/),
+     * gemessen in WSL, Pruefung-ZendureSolarFlow-0.9.26, Faelle B1/B2.
+     * Vorbild: BatterieBMS 0.9.25 (Entscheidung des Hausherrn 18.09.2026). */
+    if (zd_dienst_pid() === 0) {
+        return array(0, zd_t('TEST.M_DIENST_LAEUFT_NICHT'));
+    }
+
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
@@ -2103,14 +2116,20 @@ function zd_melden(array $befund)
      * zurueckgekehrt wurde, hat es niemand bemerkt. Deshalb sagt der
      * Fehlschlag jetzt auch etwas. Bauart aus oc_lib.php des
      * Octopus-Plugins. */
-    $zd_liblog = zd_paths()['home'] . '/libs/phplib/loxberry_log.php';
-    if (!function_exists('notify_ext') && is_file($zd_liblog)) {
+    /* Nur unter einer LoxBerry-Wurzel. Bis 0.9.25 wurde der Pfad auch mit
+     * leerer Wurzel gebildet - aus dem ausgepackten Archiv also
+     * /libs/phplib/loxberry_log.php ab der Laufwerkswurzel, und was dort lag,
+     * lief als PHP (in WSL gemessen, Pruefung-ZendureSolarFlow-0.9.26,
+     * Fall T4). */
+    $zd_home = zd_paths()['home'];
+    $zd_liblog = $zd_home !== '' ? $zd_home . '/libs/phplib/loxberry_log.php' : '';
+    if (!function_exists('notify_ext') && $zd_liblog !== '' && is_file($zd_liblog)) {
         @require_once $zd_liblog;
     }
     if (!function_exists('notify_ext')) {
         zd_log('Der Hinweis "' . $befund['text'] . '" konnte nicht an das '
              . 'Benachrichtigungszentrum gehen: notify_ext() ist nicht '
-             . 'erreichbar (' . $zd_liblog . ').');
+             . 'erreichbar (' . ($zd_liblog !== '' ? $zd_liblog : 'keine LoxBerry-Wurzel') . ').');
         return false;
     }
     notify_ext(array(
@@ -2263,9 +2282,11 @@ function zd_mqtt_zustand()
  * Verwandten - dort ist sie an einem echten Speicher gemessen:
  *
  *   Zustand   soc, soc_min, soc_max, grenze_ein, grenze_aus, acmodus,
- *             online, soll, sollok, packs, geraete, ok, kapaz, restkwh,
+ *             soll, sollok, packs, geraete, kapaz, restkwh,
  *             alle Energiezaehler (Tag, Monat, Jahr, gesamt, Wirkungsgrad,
  *             Zyklen) - ein Zaehlerstand ist der Stand, nicht die Messung
+ *   Dienst    ok, geraetN/online - seit 0.9.26 NICHT mehr retained, siehe
+ *             zd_mqtt_dienstaussage()
  *   Messwert  pv, haus, netz, batp, laden, entladen, temp, dvolt, volt,
  *             watt, ms - alles, was sich im Sekundentakt aendert und nach
  *             einem Ausfall nicht stehenbleiben darf
@@ -2297,10 +2318,10 @@ function zd_mqtt_retain($thema)
     if ($tab === null) {
         $tab = array();
         foreach (array(
-            'ok', 'geraete',
+            'geraete',
             'geraetN/soc', 'geraetN/soc_min', 'geraetN/soc_max',
             'geraetN/grenze_aus', 'geraetN/grenze_ein', 'geraetN/acmodus',
-            'geraetN/online', 'geraetN/soll', 'geraetN/sollok',
+            'geraetN/soll', 'geraetN/sollok',
             'geraetN/packs',
             'geraetN/energie/gesamt/laden', 'geraetN/energie/gesamt/entladen',
             'geraetN/energie/wirkungsgrad', 'geraetN/energie/zyklen',
@@ -2309,6 +2330,417 @@ function zd_mqtt_retain($thema)
         ) as $x) { $tab[$x] = true; }
     }
     return isset($tab[$t]);
+}
+
+/**
+ * Ist das eine Aussage des DIENSTES ueber sich selbst?
+ *
+ * ok        "mindestens ein Geraet hat frische Daten" - aus der eigenen
+ *           Empfangsmarke gerechnet (zd_abbilden(), bin/zendure_dienst.php)
+ * online    je Geraet: "die EIGENEN letzten Daten sind juenger als die
+ *           Frist" - der Dienst schliesst es aus seinem eigenen Abruf, das
+ *           Geraet meldet es nicht
+ *
+ * Beide gingen von 0.9.19 bis 0.9.25 retained hinaus (in den Archiven
+ * 0.9.19-0.9.25 gleich). Stirbt der Dienst, bliebe die 1 stehen, und nach
+ * einem Neustart von Broker oder Gateway laese Loxone "in Ordnung" von einem
+ * Dienst, der nicht mehr laeuft. Entscheidung des Hausherrn vom 18./19.09.2026
+ * (Regeln/07, Abschnitt 3): jede Aussage des Dienstes ueber sich selbst ist
+ * nie retained; Liste Bestand-2026-09-18/klasse-E/Dienstzustand-retained_
+ * 2026-09-19.md. Der Altwert wird einmal abgeraeumt
+ * (zd_mqtt_altlast_pruefen()), die Deinstallation leert alles
+ * (zd_mqtt_leeren()).
+ */
+function zd_mqtt_dienstaussage($thema)
+{
+    $t = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $thema);
+    return $t === 'ok' || $t === 'geraetN/online';
+}
+
+/** Ging dieses Thema in irgendeiner veroeffentlichten Fassung retained hinaus? */
+function zd_mqtt_je_retained($thema)
+{
+    return zd_mqtt_retain($thema) || zd_mqtt_dienstaussage($thema);
+}
+
+/**
+ * Den Broker der Anlage fragen, welche dieser Themen zurueckbehalten stehen.
+ *
+ * Rueckgabe: array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => wert))
+ *   ok         der Broker hat das Abonnement bestaetigt; was nicht unter
+ *              'belegt' steht, steht nicht zurueckbehalten da
+ *   unbekannt  keine Wurzel, kein Mqtt-Abschnitt, keine Verbindung,
+ *              Anmeldung abgewiesen oder keine Bestaetigung
+ *
+ * Warum fragen: gesendet wird ueber den UDP-Eingang des Gateways, und dort
+ * meldet sendto() auch fuer ein verworfenes Datagramm Erfolg. Am Geraet
+ * gemessen (Regeln/07, "Ein Absender merkt nichts davon", 19.09.2026): wer
+ * nach einem einzigen Senden einen Merker setzt, haelt die Sache fuer
+ * erledigt, waehrend der Altwert weiter im Broker steht.
+ *
+ * MQTT 3.1.1 von Hand - CONNECT, SUBSCRIBE (QoS 0), DISCONNECT -, ohne fremde
+ * Bibliothek; uebernommen aus Spotpreis-Tibber 0.9.18
+ * (tb_mqtt_behalten_fragen), erweitert auf mehrere Themen in EINEM
+ * Abonnement. Die Anmeldung nimmt Brokeruser/Brokerpass aus der general.json
+ * (Regeln/07, Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in
+ * einem Protokoll und nie auf einer Kommandozeile.
+ */
+function zd_mqtt_behalten_fragen(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') {
+            $soll[(string) $t] = true;
+        }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $m = zd_mqtt_zustand();
+    if (!$m['gefunden']) {
+        return $aus;
+    }
+    $host = trim((string) $m['broker']);
+    if ($host === '' || $host === 'localhost') {
+        $host = '127.0.0.1';
+    }
+    $port = (int) $m['brokerport'];
+    if ($port <= 0 || $port > 65535) {
+        $port = 1883;
+    }
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) {
+        return $aus;
+    }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $benutzer = (string) $m['user'];
+    $kennwort = (string) $m['pw'];
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('zdrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) {
+                $sub .= $zk($t) . chr(0);
+            }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = $wert;
+                    }
+                }
+            }
+            if ($bestaetigt) {
+                $aus['lage'] = 'ok';
+            }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Dienstaussagen muessen in DIESEM Senden noch abgeraeumt werden?
+ *
+ * $themen: Themen ohne Praefix (ok, geraetN/online), die gleich gesendet
+ * werden. Rueckgabe: array(thema => true) - fuer diese geht unmittelbar vor
+ * dem gueltigen Wert die leere retain-Nutzlast hinaus (zd_mqtt_senden()).
+ *
+ * Je Thema, bis der Merker es fuehrt:
+ *   Broker sagt "steht nicht da"  -> Merker, nichts abraeumen
+ *   Broker sagt "steht da"        -> abraeumen, KEIN Merker - beim naechsten
+ *                                    Senden wird wieder gefragt
+ *   Broker nicht zu fragen        -> abraeumen, kein Merker
+ * Der Merker liegt im Datenordner, eine Zeile "leer-bestaetigt <praefix>/
+ * <thema>" je Thema. Eine Vorfassung hat nie so eine Zeile geschrieben, ein
+ * anderes Praefix traegt andere Zeilen - beides gilt also nicht als
+ * erledigt. purge_installation raeumt den Merker bei jedem Upgrade mit ab;
+ * dann wird genau einmal nachgefragt.
+ */
+function zd_mqtt_altlast_pruefen($praefix, array $themen)
+{
+    $datei = zd_paths()['datadir'] . '/.mqtt_dienstaussage_geraeumt';
+    $kennung = 'leer-bestaetigt ';
+    $zeilen = is_file($datei) ? preg_split('/\r?\n/', (string) @file_get_contents($datei)) : array();
+    $bestaetigt = array_flip(array_map('trim', $zeilen));
+    $offen = array();
+    foreach ($themen as $t) {
+        $voll = $praefix . '/' . $t;
+        if (isset($bestaetigt[$kennung . $voll])) {
+            continue;
+        }
+        $offen[(string) $t] = $voll;
+    }
+    if (!$offen) {
+        return array();
+    }
+    $f = zd_mqtt_behalten_fragen(array_values($offen));
+    if ($f['lage'] !== 'ok') {
+        zd_log_gebremst('mqtt_rueckfrage', 'MQTT: der Broker liess sich nicht befragen, ob unter '
+            . implode(', ', $offen) . ' noch ein zurueckbehaltener Wert einer Vorfassung steht. '
+            . 'Er wird deshalb bei jedem Senden geloescht, bis der Broker antwortet.');
+        return array_fill_keys(array_keys($offen), true);
+    }
+    $raeumen = array();
+    $neu = array();
+    foreach ($offen as $t => $voll) {
+        if (isset($f['belegt'][$voll])) {
+            $raeumen[$t] = true;
+            continue;
+        }
+        $neu[] = $kennung . $voll;
+    }
+    if ($neu) {
+        $alt = array();
+        foreach ($zeilen as $z) {
+            $z = trim((string) $z);
+            if (strpos($z, $kennung) === 0) {
+                $alt[] = $z;
+            }
+        }
+        $alle = array_values(array_unique(array_merge($alt, $neu)));
+        if (@file_put_contents($datei, implode("\n", $alle) . "\n") === false) {
+            zd_log_gebremst('mqtt_merker', 'MQTT: der Merker ' . $datei . ' liess sich nicht '
+                . 'schreiben - der Broker wird beim naechsten Senden wieder gefragt.');
+        } else {
+            zd_log('MQTT: vom Broker bestaetigt, kein zurueckbehaltener Altwert mehr unter '
+                . implode(', ', array_map(function ($z) use ($kennung) {
+                    return substr($z, strlen($kennung));
+                }, $neu)) . '. Diese Themen gehen seit 0.9.26 fluechtig hinaus.');
+        }
+    }
+    return $raeumen;
+}
+
+/**
+ * Die Themen (ohne Praefix), die die Deinstallation leert: jedes, das eine
+ * veroeffentlichte Fassung je retained gesendet hat (zd_mqtt_je_retained()).
+ *
+ * Geraetenummern aus der Konfiguration (jeder Eintrag, auch ein
+ * unvollstaendiger), aus dem letzten Abbild (loxone.json) und aus dem Merker
+ * des Doppelt-senden-Filters (mqtt_letzte.json - er traegt jedes Thema, das
+ * seit dem letzten Update hinausging). Seriennummern der Akkupacks aus dem
+ * Abbild, Energiefelder aus zd_energiefelder().
+ */
+function zd_mqtt_leer_themen()
+{
+    $p = zd_paths();
+    $cfg = zd_config(false);
+    $nummern = array();
+    $n = is_array($cfg['geraete']) ? count($cfg['geraete']) : 0;
+    for ($i = 1; $i <= $n; $i++) {
+        $nummern[$i] = true;
+    }
+    $packs = array();
+    $lox = zd_json_lesen($p['datadir'] . '/loxone.json');
+    if (isset($lox['geraete']) && is_array($lox['geraete'])) {
+        foreach ($lox['geraete'] as $nr => $w) {
+            $nr = (int) $nr;
+            if ($nr <= 0) {
+                continue;
+            }
+            $nummern[$nr] = true;
+            if (is_array($w) && isset($w['packliste']) && is_array($w['packliste'])) {
+                foreach (array_keys($w['packliste']) as $sn) {
+                    $packs[$nr][] = zd_mqtt_thema_teil($sn);
+                }
+            }
+        }
+    }
+    $themen = array();
+    foreach (array_keys(zd_json_lesen($p['datadir'] . '/mqtt_letzte.json')) as $k) {
+        $k = (string) $k;
+        if ($k === '' || $k[0] === '_') {
+            continue;
+        }
+        if (preg_match('#^geraet([0-9]+)/#', $k, $mm)) {
+            $nummern[(int) $mm[1]] = true;
+        }
+        if (zd_mqtt_je_retained($k)) {
+            $themen[$k] = true;
+        }
+    }
+    foreach (array_keys(zd_mqtt_themen()) as $st) {
+        if (strpos($st, '<') !== false) {
+            continue;       // Platzhalter: unten eigens
+        }
+        if (strncmp($st, 'geraetN/', 8) === 0) {
+            foreach (array_keys($nummern) as $nr) {
+                $t = 'geraet' . $nr . '/' . substr($st, 8);
+                if (zd_mqtt_je_retained($t)) {
+                    $themen[$t] = true;
+                }
+            }
+        } elseif (zd_mqtt_je_retained($st)) {
+            $themen[$st] = true;
+        }
+    }
+    foreach (array_keys($nummern) as $nr) {
+        foreach (array('heute', 'monat', 'jahr') as $zr) {
+            foreach (array_keys(zd_energiefelder()) as $ef) {
+                $themen['geraet' . $nr . '/energie/' . $zr . '/' . $ef] = true;
+            }
+        }
+        if (isset($packs[$nr])) {
+            foreach ($packs[$nr] as $sk) {
+                $themen['geraet' . $nr . '/pack/' . $sk . '/soc'] = true;
+            }
+        }
+    }
+    ksort($themen);
+    return array_keys($themen);
+}
+
+/**
+ * Aus der Deinstallation: alle zurueckbehaltenen Themen der Linie leeren.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (mqttgateway.pl, am Geraet belegt:
+ * die leere Nachricht geht als Loeschung an den Broker, Regeln/07). Nach
+ * jeder Runde wird der Broker gefragt (zd_mqtt_behalten_fragen()); nur was
+ * dort noch steht, geht in der naechsten Runde wieder hinaus. Hoechstens
+ * $runden Runden. Ist der Broker nicht zu fragen, gehen alle Runden hinaus,
+ * und die Ausgabe sagt, dass nicht nachgelesen wurde.
+ *
+ * Schreibt kein Protokoll und legt nichts an (zd_config(false)).
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * Senden gescheitert, 2 nicht moeglich.
+ */
+function zd_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $cfg = zd_config(false);
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '') {
+        $praefix = 'zendure';
+    }
+    if (preg_match('/[#+\s]/', $praefix)) {
+        echo "<WARNING> MQTT: das Themenpraefix enthaelt einen Platzhalter oder ein "
+           . "Leerzeichen - zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $z = zd_mqtt_zustand();
+    if (!$z['udpport']) {
+        echo "<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $offen = array();
+    foreach (zd_mqtt_leer_themen() as $t) {
+        $offen[] = $praefix . '/' . $t;
+    }
+    $n = count($offen);
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $nachgelesen = false;
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) {
+            usleep((int) ($pause * 1000000));
+        }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = zd_mqtt_behalten_fragen($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $n . " zurueckbehaltene Themen unter " . $praefix . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $z['udpport'] . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
 }
 
 /**
@@ -2329,6 +2761,18 @@ function zd_mqtt_senden(array $paare, $praefix)
         zd_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
             . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
     }
+    /* Dienstaussagen (ok, geraetN/online) gingen bis 0.9.25 retained hinaus.
+     * Ein publish ersetzt einen zurueckbehaltenen Wert im Broker NICHT; der
+     * Altwert wird deshalb abgeraeumt, bis der Broker bestaetigt, dass er
+     * fort ist (zd_mqtt_altlast_pruefen()). */
+    $zd_kand = array();
+    foreach ($paare as $k => $v) {
+        if (zd_mqtt_dienstaussage($k) && $v !== null && $v !== ''
+            && zd_mqtt_wert_saeubern($v) !== '') {
+            $zd_kand[] = (string) $k;
+        }
+    }
+    $raeumen = $zd_kand ? zd_mqtt_altlast_pruefen($praefix, $zd_kand) : array();
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         zd_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
@@ -2352,6 +2796,17 @@ function zd_mqtt_senden(array $paare, $praefix)
         /* Zustand oder Messwert - die Frage stellt zd_mqtt_retain() je
            THEMA. Ueber das Gateway V1 heisst der Befehl dann "retain" statt
            "publish" (mqttgateway.pl:293 und :354-357, am Geraet gemessen). */
+        /* Die leere retain-Nutzlast loescht den zurueckbehaltenen Altwert
+           (mqttgateway.pl:281, :311-315, :357, am Geraet 19.09.2026 belegt,
+           Regeln/07). Sie geht UNMITTELBAR vor dem gueltigen Wert hinaus:
+           wer das Thema abonniert hat, bekommt die Loeschung als leere
+           Nachricht, und der naechste Wert steht gleich dahinter. Das ist die
+           eine gewollte leere Nutzlast; sonst laesst diese Funktion keine
+           durch. */
+        if (isset($raeumen[$k])) {
+            $leer = 'retain ' . $praefix . '/' . $k . ' ';
+            @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $z['udpport']);
+        }
         $befehl = zd_mqtt_retain($k) ? 'retain' : 'publish';
         $msg = $befehl . ' ' . $praefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
@@ -2953,8 +3408,17 @@ function zd_t($schluessel)
         // Wie zd_paths(): ohne festen Standardort dahinter (Fall B4).
         $home = zd_lbhome();
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        /* Ohne Wurzel NUR die eigenen Sprachdateien. Bis 0.9.25 wurde der
+         * Installationspfad auch mit leerer Wurzel gebildet und abgefragt -
+         * aus dem ausgepackten Archiv also /templates/plugins/html/lang ab
+         * der Laufwerkswurzel; lag dort etwas, zeigte die Oberflaeche fremde
+         * Texte (in WSL gemessen, Pruefung-ZendureSolarFlow-0.9.26, Fall T1;
+         * Bauart aus Weissware 0.9.30, ww_t()). */
+        $pfad = '';
+        if ($home !== '' && is_dir($home . '/templates/plugins/' . $ordner . '/lang')) {
+            $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        }
+        if ($pfad === '') {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . zd_sprache() . '.ini', true, INI_SCANNER_RAW);

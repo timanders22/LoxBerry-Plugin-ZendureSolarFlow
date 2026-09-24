@@ -36,14 +36,26 @@ date_default_timezone_set(@date_default_timezone_get() ?: 'Europe/Berlin');
  * abgeleitet aus dem eigenen Ablageort <home>/bin/plugins/<ordner>. */
 $zd_self = dirname(__FILE__);
 $zd_name = basename($zd_self);
-$zd_home = dirname(dirname(dirname($zd_self)));
+/* Installiert oder Archiv entscheidet der eigene Ablageort: installiert liegt
+ * diese Datei unter <home>/bin/plugins/<ordner>, im ausgepackten Archiv unter
+ * <archiv>/bin. Bis 0.9.25 wurden vier Kandidaten der Reihe nach probiert,
+ * die beiden installierten VOR der eigenen Bibliothek - aus einem Archiv
+ * unter / hiess das /webfrontend/html/plugins/bin/zd_lib.php ab der
+ * Laufwerkswurzel, und der vierte (<archiv>/../webfrontend/...) lag ohnehin
+ * ausserhalb des Archivs (in WSL gemessen, Pruefung-ZendureSolarFlow-0.9.26,
+ * Faelle T8/T9). bin/zendure_dienst.php und bin/healthcheck tragen denselben
+ * Block. */
+if (basename(dirname($zd_self)) === 'plugins') {
+    $zd_home = dirname(dirname(dirname($zd_self)));
+    $zd_kandidaten = array(
+        $zd_home . '/webfrontend/html/plugins/' . $zd_name . '/zd_lib.php',
+        $zd_home . '/webfrontend/htmlauth/plugins/' . $zd_name . '/zd_lib.php',
+    );
+} else {
+    $zd_kandidaten = array(dirname($zd_self) . '/webfrontend/html/zd_lib.php');
+}
 $zd_gefunden = false;
-foreach (array(
-    $zd_home . '/webfrontend/html/plugins/' . $zd_name . '/zd_lib.php',
-    $zd_home . '/webfrontend/htmlauth/plugins/' . $zd_name . '/zd_lib.php',
-    dirname($zd_self) . '/webfrontend/html/zd_lib.php',
-    dirname($zd_self) . '/../webfrontend/html/zd_lib.php',
-) as $zd_kandidat) {
+foreach ($zd_kandidaten as $zd_kandidat) {
     if (is_file($zd_kandidat)) {
         require_once $zd_kandidat;
         $zd_gefunden = true;
@@ -1708,6 +1720,46 @@ function zd_befehl_ausfuehren(array $befehl, array $geraete, array $cfg)
     return array($ok, $m . $zusatz, false);
 }
 
+/* Hoechstalter eines Auftrags, den der Dienst beim START noch ausfuehrt.
+ *
+ * Bis 0.9.25 fuehrte ein frisch gestarteter Dienst jeden liegenden Auftrag
+ * aus, gleich wie alt - bis auf Leistungsvorgaben (zd_ist_stellbefehl(),
+ * Verfall nach befehl_verfall_s). Ein "aus", ein Satztest oder eine
+ * Geraetesuche, eingereiht ohne laufenden Dienst, lief damit Stunden spaeter
+ * ungefragt an. Seit 0.9.26 reiht zd_befehl_absetzen() ohne Dienst gar nicht
+ * mehr ein; was trotzdem liegt (Dienst starb zwischen Pruefung und Abholen,
+ * Datenordner zurueckgesichert), faellt hier heraus. In WSL gemessen,
+ * Pruefung-ZendureSolarFlow-0.9.26, Fall B4.
+ *
+ * 60 s wie BatterieBMS 0.9.25 (Entscheidung des Hausherrn vom 18.09.2026):
+ * wer einreiht, wartet hoechstens ZD_WARTEN_WEB = 10 s auf die Antwort;
+ * ein Auftrag, der beim Start aelter als 60 s ist, hat niemanden mehr, der
+ * auf ihn wartet. Ein Zeitpunkt mehr als 5 s in der Zukunft (Uhr
+ * zurueckgesprungen) oder ohne Zeitpunkt gilt ebenfalls als veraltet. Nur
+ * beim Start; im Betrieb holt der Dienst jeden Auftrag im naechsten
+ * Schleifendurchlauf ab. */
+function zd_alte_befehle_verwerfen()
+{
+    $ordner = zd_paths()['datadir'] . '/befehle';
+    $jetzt = time();
+    clearstatcache();
+    foreach (glob($ordner . '/*.json') ?: array() as $datei) {
+        $b = zd_json_lesen($datei);
+        $ts = (is_array($b) && isset($b['ts']) && preg_match('/^[0-9]{1,12}$/', (string) $b['ts']))
+            ? (int) $b['ts'] : (int) @filemtime($datei);
+        $alter = $ts > 0 ? $jetzt - $ts : null;
+        if ($alter !== null && $alter <= 60 && $alter >= -5) {
+            continue;
+        }
+        @unlink($datei);
+        zd_antwort_schreiben(basename($datei, '.json'), 0, 'Beim Dienststart verworfen: veraltet.');
+        zd_log('Warteschlange beim Start: Auftrag '
+             . (isset($b['aktion']) ? preg_replace('/[^a-z0-9_]/i', '', (string) $b['aktion']) : '?')
+             . ($alter === null ? ' ohne lesbaren Zeitpunkt' : ' ' . $alter . ' s alt')
+             . ' - VERWORFEN, nicht ausgefuehrt.');
+    }
+}
+
 /** Alle vorliegenden Befehle abarbeiten. Rueckgabe: Sofortabruf gewuenscht? */
 function zd_warteschlange(array $geraete, array $cfg)
 {
@@ -2141,6 +2193,7 @@ function zd_dienst_schleife($einmal = false)
     }
     zd_log('Dienst startet: ' . count($geraete) . ' Geraet(e), Takt ' . (int) $cfg['intervall']
          . ' s, Steuerung ' . (!empty($cfg['steuerung_ein']) ? 'ein' : 'aus') . '.');
+    zd_alte_befehle_verwerfen();
 
     // Frueheren Zustand uebernehmen, damit nach einem Neustart nicht alles leer ist.
     $alt = zd_cache();
@@ -2345,13 +2398,18 @@ foreach ($zd_argv as $zd_i => $zd_a) {
     if ($zd_i === 0 || strncmp((string) $zd_a, '--', 2) !== 0) {
         continue;
     }
-    if (!in_array($zd_a, array('--selbsttest', '--einmal'), true)) {
+    if (!in_array($zd_a, array('--selbsttest', '--einmal', '--mqtt-leeren'), true)) {
         fwrite(STDERR, sprintf(zd_t('DIENST.M_SCHALTER_UNBEKANNT'), $zd_a) . "\n");
         exit(2);
     }
 }
 if (in_array('--selbsttest', $zd_argv, true)) {
     exit(zd_selbsttest());
+}
+/* Aus uninstall/uninstall: zurueckbehaltene Themen der Linie abraeumen.
+ * Schreibt kein Protokoll und legt nichts an (zd_mqtt_leeren()). */
+if (in_array('--mqtt-leeren', $zd_argv, true)) {
+    exit(zd_mqtt_leeren());
 }
 /* PHP-Fehler des laufenden Dienstes gehoeren ins Protokoll (B48, 17.09.2026).
  *
