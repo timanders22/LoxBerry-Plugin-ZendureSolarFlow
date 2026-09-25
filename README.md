@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.26 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.27 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,18 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.27 — „nicht zu fragen“ heißt nicht „leer“
+
+Die Rückfrage beim Broker, ob ein früher zurückbehaltener Dienstwert (`ok`,
+`geraetN/online`) noch dasteht, liest jetzt die Antwort auf das Abonnement (SUBACK).
+Lehnt der Broker das Lesen ab (Rückgabe 0x80, etwa durch eine Zugriffsregel) oder
+antwortet er nicht zu jedem Thema, gilt er als „nicht zu fragen“: kein Merker „vom
+Broker bestätigt“, der Altwert wird weiter unmittelbar vor dem gültigen Wert
+gelöscht, das Protokoll sagt es, und die Deinstallation meldet nicht mehr „der
+Broker bestaetigt“, sondern dass sie nicht nachlesen konnte. Bis 0.9.26 galt eine
+Ablehnung als „nichts belegt“ (gemessen in WSL, `Pruefung-ZendureSolarFlow-0.9.27`,
+Fälle S3, S4, S7, S9, S11).
 
 ## Version 0.9.26 — Dienstaussagen nicht mehr zurückbehalten, Archiv hält nichts an, ohne Dienst wird nichts eingereiht
 
