@@ -361,6 +361,15 @@ anhalten() {
         kill -9 "$P" 2>/dev/null
         sleep 1
     fi
+    # Nachsehen, bevor "angehalten" gemeldet wird (Befund Code 13,
+    # 29.09.2026): bis 0.9.27 stand hier ohne Pruefung "angehalten" mit
+    # Rueckgabe 0, auch wenn kill scheiterte (Prozess eines anderen
+    # Benutzers). Die PID-Datei bleibt dann liegen - der Prozess laeuft ja.
+    if laeuft; then
+        horcher_einsammeln "$PNAME"
+        echo "FEHLER: der Dienst liess sich nicht anhalten (PID $P laeuft weiter)."
+        return 1
+    fi
     rm -f "$PID"
     horcher_einsammeln "$PNAME"
     echo "angehalten"

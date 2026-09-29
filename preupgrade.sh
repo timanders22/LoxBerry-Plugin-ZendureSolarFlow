@@ -229,10 +229,34 @@ zd_traegt_token() {
 }
 
 if [ -f "$CF" ] && zd_traegt_token "$CF"; then
-    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json"
+    # chmod nach cp -p (Befund I4, 29.09.2026): cp -p bringt die Rechte der
+    # Quelle mit, bis 0.9.27 stand die Zweitschrift dann auf 644.
+    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
+        && chmod 0600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
 elif [ -f "$CF" ]; then
-    echo "<WARNING> Die Konfiguration traegt kein Aktionstoken - die vorhandene"
-    echo "<WARNING> Zweitschrift bleibt unveraendert stehen."
+    # Eine Datei ohne Token, die aber etwas traegt (abgeschnitten), wird
+    # nicht verloren (Befund I6, 29.09.2026): bis 0.9.27 war sie nach dem
+    # Update fort, wenn es keine Zweitschrift gab, und die Warnung nannte
+    # eine Zweitschrift, die es nicht gab.
+    ZD_REST=$(tr -d ' \t\n\r' < "$CF" 2>/dev/null)
+    if [ -n "$ZD_REST" ] && [ "$ZD_REST" != "{}" ] && [ "$ZD_REST" != "[]" ]; then
+        ZD_KAPUTT="$BASE/config/plugins/$PFOLDER.zendure.json.kaputt.$(date +%Y%m%d_%H%M%S)"
+        if ( umask 077 && cp "$CF" "$ZD_KAPUTT" ) 2>/dev/null; then
+            chmod 0600 "$ZD_KAPUTT" 2>/dev/null
+            echo "<WARNING> Die Konfiguration traegt kein lesbares Aktionstoken. Sie wurde"
+            echo "<WARNING> beiseitegelegt: $ZD_KAPUTT"
+        else
+            echo "<WARNING> Die Konfiguration traegt kein lesbares Aktionstoken und liess sich"
+            echo "<WARNING> nicht beiseitelegen ($ZD_KAPUTT)."
+        fi
+    fi
+    if [ -f "$BASE/config/plugins/$PFOLDER.backup.json" ]; then
+        echo "<WARNING> Die Konfiguration traegt kein Aktionstoken - die vorhandene"
+        echo "<WARNING> Zweitschrift bleibt unveraendert stehen."
+    else
+        echo "<WARNING> Die Konfiguration traegt kein Aktionstoken, und es gibt keine"
+        echo "<WARNING> Zweitschrift, aus der sie zurueckgespielt werden koennte."
+    fi
 fi
 echo "<OK> preupgrade abgeschlossen."
 

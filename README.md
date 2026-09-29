@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.27 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.28 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,61 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.28 — ein toter Dienst sieht nicht mehr gesund aus
+
+Die Durchsicht vom 29.09.2026 hatte vier Prüfer (Code, Oberfläche, Installer, MQTT). Jeder Punkt ist gemessen. Zu jedem
+gibt es eine Gegenprobe, die an 0.9.27 rot und an 0.9.28 grün ist. Gemessen wurde in WSL, mit Attrappen für das
+Zendure-Gerät und den Broker. Im Haus gibt es kein Zendure-Gerät.
+
+**Ausfall wird erkannt.**
+- Der Endpunkt meldet `OK=0`, sobald sein Abbild älter ist als der dreifache Takt. Bisher lieferte ein Dienst, der
+  seit einem Tag stand, `OK=1` und `ALTER=0`.
+- Der Reiter Test zeigt dann ein Kreuz statt eines Hakens.
+- Über MQTT gehen jetzt `status/ts` und `status/zaehler` als Lebenszeichen hinaus. Das geschieht bei jedem Durchgang,
+  höchstens alle 30 s, und nie zurückbehalten. Bisher gab es über MQTT kein Lebenszeichen, und Loxone behielt `ok=1`.
+
+**Zurückbehaltene Themen nach Hausstandard.**
+- `energie/heute`, `monat` und `jahr` gehen flüchtig hinaus. Ihre alten zurückbehaltenen Werte räumt der Dienst ab.
+- Ein Zustand ohne Aussage geht als `-` hinaus, statt mit dem alten Wert stehen zu bleiben. Beispiele: `soll` und
+  `sollok` nach dem Rückfall, `summe/*`, wenn ein Gerät schweigt.
+- Ein ausgetragenes Gerät oder ein getauschter Akkupack hinterlässt keine Themen mehr.
+- Ein Themenwechsel, das Ausschalten von MQTT und die Deinstallation leeren die Themen unter dem bisherigen Präfix.
+  Danach fragen sie den Broker nach.
+- Messwerte eines gestörten Geräts gehen nicht mehr hinaus. Zwischen den Datagrammen liegen 5 ms.
+- Die Auffrischung ist auf höchstens 3600 s begrenzt.
+- `mqtt_subscriptions.cfg` wird geschrieben. Das Abo `<präfix>/#` muss niemand mehr von Hand eintragen.
+
+**Steuerung.**
+- Weist das Gerät den Rückfall ab, versucht der Dienst es erneut. Bisher gab er die Regie still ab, und der Speicher
+  entlud weiter.
+- `aktion=abruf` hat eine Bremse. Ein zu früher Aufruf bekommt `GRUND=ZU_FRUEH` und das vorhandene Abbild.
+- Ein Trockenlauf mit angehängtem Zeilenumbruch schaltete bisher wirklich. Das tut er nicht mehr.
+- Abweisungen am Endpunkt stehen jetzt mit der Adresse des Anrufers im Protokoll.
+- Ein gespeichertes Token, das nicht vom Plugin erzeugt ist, ergibt 403 `TOKEN_UNGUELTIG`.
+- Ein zweiter, von Hand gestarteter Dienst endet sofort.
+- Die Meldung „angehalten“ kommt nur noch, wenn der Prozess wirklich fort ist.
+
+**Einstellungen und Sicherung.**
+- Bei voller Speicherkarte gingen Konfiguration, Zweitschrift und Token verloren. Jetzt gilt erst als geschrieben, was
+  ganz geschrieben und zurückgelesen ist.
+- Das Zurückspielen prüft jeden Wert wie das Formular. Bisher wurde ein Token als Liste zu `Array`, mit dem der
+  Endpunkt schaltete. `steuerung_ein` wurde bisher still eingeschaltet, und das Broker-Passwort ging verloren.
+- Es wird nur eine wirklich hochgeladene Datei gelesen.
+- Nach jedem Absenden leitet die Seite um. F5 legt keinen zweiten Stellbefehl mehr ab.
+- Nach „Neues Token“ und nach einer Neuinstallation wird der erste Klick angenommen.
+- Eingaben werden beanstandet statt still zurechtgebogen. Das Broker-Passwort lässt sich löschen.
+- Die englische Oberfläche zeigt keine deutschen Meldungen mehr. Die Seite wartet nicht mehr bei jedem Aufbau auf
+  den eigenen Endpunkt.
+
+**Installation.**
+- Eine Neuinstallation spielt keine Einstellungen, keinen Verlauf und keinen Dienstmerker einer früheren Installation
+  mehr ein. Bisher lief danach sogar der Dienst ungefragt mit dem alten Gerät an. Diese Reste werden als `.alt`
+  beiseitegelegt und einmal genannt.
+- Die Deinstallation beendet nur noch den eigenen Dienst und sammelt seinen MQTT-Horcher ein. Bisher traf sie jeden
+  Prozess, der den Dienstpfad als Argument trug.
+- Konfiguration und Zweitschriften stehen immer auf 0600.
+- Eine abgeschnittene Konfiguration bleibt als `.kaputt.<Zeit>` liegen.
 
 ## Version 0.9.27 — „nicht zu fragen“ heißt nicht „leer“
 

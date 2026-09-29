@@ -38,13 +38,14 @@ function zd_endpunkt_probe()
     // Ueber 127.0.0.1, nicht ueber den Rechnernamen: gemessen werden soll der
     // eigene Webserver, nicht die Namensaufloesung.
     $ctx = stream_context_create(array('http' => array(
-        'method' => 'GET', 'timeout' => 5, 'ignore_errors' => true,
+        'method' => 'GET', 'timeout' => 3, 'ignore_errors' => true,
         'header' => "Accept: text/plain\r\nUser-Agent: LoxBerry-Zendure-Selbsttest\r\n",
     )));
-    $roh = @file_get_contents('http://127.0.0.1' . $pfad, false, $ctx);
+    // zd_http_holen() statt der alten Kopfzeilen-Variable (Befund Code 14).
+    list($roh, $zd_kopf) = zd_http_holen('http://127.0.0.1' . $pfad, $ctx);
     $code = 0;
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $z) {
+    if ($zd_kopf) {
+        foreach ($zd_kopf as $z) {
             if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', (string) $z, $m)) {
                 $code = (int) $m[1];
             }
@@ -173,12 +174,65 @@ function zd_smactive_probe(array $reiter, $datei)
     return array(1, sprintf(zd_t('TEST.A_TAB_OK'), count($soll)));
 }
 
+/**
+ * Themenliste gegen Sendecode, in beide Richtungen, und die Retain-Spalte
+ * gegen das gesendete Befehlswort (Befund M10, 29.09.2026; Regeln/07
+ * Abschnitt 3 "Das Plugin misst die Uebereinstimmung selbst nach").
+ *
+ * Gesendet wird aus zd_mqtt_paare() und zd_mqtt_lebenszeichen() - denselben
+ * Funktionen wie im Dienst -, mit zwei erfundenen Geraeten, in denen jedes
+ * Feld belegt ist. Die Themen werden auf die Schreibweise der Liste
+ * gebracht (geraetN, <SN>, <feld>). Dazu die Hausregel: Dienstaussagen, das
+ * Lebenszeichen und die Werte mit Zeitbezug gehen nie retained.
+ * Rueckgabe: array(ungelistet, nie gesendet, falsches Befehlswort).
+ */
+function zd_mqtt_abgleich()
+{
+    $cfg = zd_config();
+    $cfg['energie_ein'] = 1;
+    $w = array('ok' => 1, 'alter' => 0, 'soll' => 1, 'sollok' => 1, 'ms' => 1,
+               'packliste' => array('PROBE1' => array('soc' => 1, 'volt' => 1, 'dvolt' => 1,
+                                                       'temp' => 1, 'watt' => 1)));
+    foreach (array('soc', 'soc_min', 'soc_max', 'pv', 'haus', 'netz', 'laden', 'entladen', 'batp',
+                   'grenze_aus', 'grenze_ein', 'acmodus', 'packs', 'dvolt', 'temp') as $f) {
+        $w[$f] = 1;
+    }
+    $g = array('kapazitaet_wh' => 1000);
+    $paare = zd_mqtt_paare(array('1' => $w, '2' => $w), array(1 => $g, 2 => $g), $cfg, 1, 'probe')
+           + zd_mqtt_lebenszeichen(time(), 1);
+    $stamm = array();
+    foreach (array_keys($paare) as $k) {
+        $s = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $k);
+        $s = preg_replace('#^geraetN/pack/[^/]+/#', 'geraetN/pack/<SN>/', $s);
+        $s = preg_replace('#^geraetN/energie/(heute|monat|jahr)/[^/]+$#', 'geraetN/energie/$1/<feld>', $s);
+        if (!isset($stamm[$s])) {
+            $stamm[$s] = (string) $k;
+        }
+    }
+    $liste = zd_mqtt_themen();
+    $falsch = array();
+    foreach ($stamm as $s => $k) {
+        if (isset($liste[$s]) && (zd_mqtt_retain($s) ? 'retain' : 'publish') !== zd_mqtt_befehlswort($k)) {
+            $falsch[] = $s;
+        }
+    }
+    foreach (array('ok', 'geraet1/online', 'status/ts', 'status/zaehler', 'geraet1/energie/heute/pv',
+                   'geraet1/energie/monat/pv', 'geraet1/energie/jahr/pv', 'geraet1/pv') as $k) {
+        if (zd_mqtt_befehlswort($k) !== 'publish') {
+            $falsch[] = $k;
+        }
+    }
+    return array(array_keys(array_diff_key($stamm, $liste)), array_keys(array_diff_key($liste, $stamm)),
+                 array_values(array_unique($falsch)));
+}
+
 function zd_pruefungen()
 {
     $p = zd_paths();
     $cfg = zd_config();
     $geraete = zd_geraete();
-    $werte = zd_werte();
+    // OK und Alter zur Lesezeit, wie im Endpunkt (U8, Entscheidung 4).
+    $werte = zd_werte_jetzt($cfg);
     $zeilen = array();
 
     $pid = zd_dienst_pid();
@@ -273,6 +327,16 @@ function zd_pruefungen()
         $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_MQTT'), zd_t('TEST.A_MQTT_AUS'));
     }
 
+    // Themenliste gegen Sendecode (M10).
+    list($zd_ug, $zd_us, $zd_fa) = zd_mqtt_abgleich();
+    $zeilen[] = (!$zd_ug && !$zd_us && !$zd_fa)
+        ? zd_pruefzeile(1, zd_t('TEST.F_MQTT_ABGLEICH'),
+            sprintf(zd_t('TEST.A_MQTT_ABGLEICH_OK'), count(zd_mqtt_themen())))
+        : zd_pruefzeile(0, zd_t('TEST.F_MQTT_ABGLEICH'),
+            sprintf(zd_t('TEST.A_MQTT_ABGLEICH_FEHL'),
+                    zd_e($zd_ug ? implode(', ', $zd_ug) : '-'), zd_e($zd_us ? implode(', ', $zd_us) : '-'),
+                    zd_e($zd_fa ? implode(', ', $zd_fa) : '-')));
+
     $zeilen[] = zd_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, zd_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? zd_t('TEST.A_STEUERUNG_EIN') : zd_t('TEST.A_STEUERUNG_AUS'));
 
@@ -310,14 +374,51 @@ function zd_pruefungen()
             sprintf(zd_t('TEST.A_RUECKFALL_EIN'), (int) $cfg['rueckfall_min']));
 
     // --- Der eigene Endpunkt, wirklich abgerufen ---
-    list($epstand, $eptext) = zd_endpunkt_probe();
+    /* Nur im Reiter Test (U10): bis 0.9.27 lief der Selbstaufruf bei jedem
+     * Seitenaufbau, und bei haengendem Webserver wartete jeder Reiter bis
+     * zu 5 s. */
+    if (isset($GLOBALS['zd_tab']) && $GLOBALS['zd_tab'] === 'tab-test') {
+        list($epstand, $eptext) = zd_endpunkt_probe();
+    } else {
+        $epstand = -1;
+        $eptext = zd_t('TEST.A_EP_NUR_TEST');
+    }
     $zeilen[] = zd_pruefzeile($epstand, zd_t('TEST.F_ENDPUNKT'), $eptext);
 
     // --- Herzschlag ---
+    /* Ein Haken nur, wenn das Abbild nicht aelter als der dreifache Takt
+     * ist (U8): bis 0.9.27 genuegte ein vorhandener Zaehler - bei einem
+     * Dienst, der seit einem Tag stand, "Ja, Stand 42". */
     $zae = zd_herzstand();
-    $zeilen[] = zd_pruefzeile($zae >= 0 ? 1 : -1, zd_t('TEST.F_HERZ'),
-        $zae >= 0 ? sprintf(zd_t('TEST.A_HERZ'), $zae, (int) $cfg['intervall'])
-                  : zd_t('TEST.A_HERZ_KEINER'));
+    $zd_ab = zd_alter();
+    if ($zae < 0) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_HERZ'), zd_t('TEST.A_HERZ_KEINER'));
+    } elseif ($zd_ab >= 0 && $zd_ab <= zd_ok_grenze($cfg)) {
+        $zeilen[] = zd_pruefzeile(1, zd_t('TEST.F_HERZ'),
+            sprintf(zd_t('TEST.A_HERZ'), $zae, (int) $cfg['intervall']));
+    } else {
+        $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_HERZ'),
+            sprintf(zd_t('TEST.A_HERZ_STEHT'), $zae, $zd_ab, zd_ok_grenze($cfg)));
+    }
+
+    /* Ist die Konfiguration heil? (U9) Kreuz, wenn eine .kaputt-Datei
+     * juenger als 7 Tage daneben liegt oder die Datei in diesem Aufruf aus
+     * der Zweitschrift geheilt wurde - bis 0.9.27 wusste das nur das
+     * Protokoll. */
+    $zd_kap = array();
+    foreach (array_merge(array($p['config'] . '.kaputt'),
+                         glob($p['configdir'] . '.zendure.json.kaputt.*') ?: array()) as $zd_kf) {
+        if (is_file($zd_kf) && (int) @filemtime($zd_kf) > time() - 7 * 86400) {
+            $zd_kap[] = basename($zd_kf);
+        }
+    }
+    if ($zd_kap || !empty($GLOBALS['zd_cfg_geheilt'])) {
+        $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_CFG_HEIL'),
+            sprintf(zd_t('TEST.A_CFG_KAPUTT'), zd_e($zd_kap ? implode(', ', $zd_kap) : '-'),
+                    !empty($GLOBALS['zd_cfg_geheilt']) ? zd_t('TEST.A_CFG_GEHEILT') : ''));
+    } else {
+        $zeilen[] = zd_pruefzeile(1, zd_t('TEST.F_CFG_HEIL'), zd_t('TEST.A_CFG_HEIL'));
+    }
 
     /* Steht in der DATEI, was in den Vorgaben steht? zd_config() ergaenzt
      * Fehlendes bei jedem Lesen im Arbeitsspeicher - auf der Platte bleibt

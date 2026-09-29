@@ -72,6 +72,7 @@ $GLOBALS['zd_zustaende'] = array();   // Nr => Rohwerte je Geraet
 $GLOBALS['zd_letzte_schreibzeit'] = array();
 $GLOBALS['zd_horcher'] = null;
 $GLOBALS['zd_antwortzeit'] = array();   // Geraetenummer => Millisekunden
+$GLOBALS['zd_leben_ts'] = 0;            // letztes MQTT-Lebenszeichen (M1)
 
 /* ------------------------------------------------------------------
  * Kleine Helfer
@@ -89,16 +90,6 @@ function zd_zahl($wert, $nachkomma = 0)
     }
     $f = (float) $wert;
     return $nachkomma > 0 ? round($f, $nachkomma) : (int) round($f);
-}
-
-function zd_erstes(array $q, array $schluessel)
-{
-    foreach ($schluessel as $k) {
-        if (isset($q[$k]) && $q[$k] !== '') {
-            return $q[$k];
-        }
-    }
-    return null;
 }
 
 /** Fehlermeldungen, die sagen, wer geantwortet hat. */
@@ -142,7 +133,7 @@ function zd_http_kopf()
 }
 
 /**
- * Den Statuscode aus $http_response_header holen.
+ * Den Statuscode aus den Kopfzeilen holen (seit 0.9.28 aus zd_http_holen()).
  *
  * ignore_errors => true ist richtig: ohne das kaeme bei einem Fehlerstatus
  * gar kein Koerper an, und die Fehlermeldung des Geraets waere fort. Dann
@@ -188,13 +179,13 @@ function zd_http_abruf(array $g, $tmo = 4)
      * antwortet das Geraet? Ein Speicher, dessen Antwortzeit von 40 auf
      * 3000 ms steigt, hat ein Problem, lange bevor er ganz ausfaellt. */
     $t0 = microtime(true);
-    $roh = @file_get_contents($url, false, $ctx);
+    // zd_http_holen(): die Kopfzeilen aus dem Datenstrom, nicht aus der
+    // alten Kopfzeilen-Variable (Befund Code 14; bis 0.9.27 unter 8.5
+    // "Deprecated").
+    list($roh, $zd_kopf) = zd_http_holen($url, $ctx);
     $GLOBALS['zd_antwortzeit'][(int) (isset($g['nr']) ? $g['nr'] : 0)]
         = (int) round((microtime(true) - $t0) * 1000);
-    // $http_response_header wird von file_get_contents im AUFRUFENDEN
-    // Gueltigkeitsbereich angelegt - es gibt sie hier, aber nur nach einem
-    // Aufruf, der wirklich eine Antwort bekommen hat.
-    $status = isset($http_response_header) ? zd_http_status($http_response_header) : 0;
+    $status = zd_http_status($zd_kopf);
     if ($roh === false) {
         $e = error_get_last();
         /* Zwei Fassungen desselben Fehlers, und beide werden gebraucht:
@@ -239,8 +230,8 @@ function zd_http_schreiben(array $g, array $eigenschaften, $tmo = 4)
         'method' => 'POST', 'header' => zd_http_kopf(), 'content' => $koerper,
         'timeout' => $tmo, 'ignore_errors' => true,
     )));
-    $roh = @file_get_contents('http://' . $g['ip'] . '/properties/write', false, $ctx);
-    $status = isset($http_response_header) ? zd_http_status($http_response_header) : 0;
+    list($roh, $zd_kopf) = zd_http_holen('http://' . $g['ip'] . '/properties/write', $ctx);
+    $status = zd_http_status($zd_kopf);
     if ($roh === false) {
         $e = error_get_last();
         return array(0, zd_fehlertext(isset($e['message']) ? $e['message']
@@ -1692,6 +1683,13 @@ function zd_befehl_ausfuehren(array $befehl, array $geraete, array $cfg)
                 return array(0, sprintf(zd_t('DIENST.M_AUSSERHALB'), $watt, $grenze), false);
             }
             $sollwert = zd_rastern($watt, $cfg);
+            /* Die Antwort nennt den tatsaechlich gesetzten Wert (Befund Code
+             * 11, 29.09.2026): bis 0.9.27 ging watt=333 bei Schrittweite 50
+             * still als 300 hinaus. */
+            if ($sollwert !== $watt) {
+                $zusatz = ' ' . sprintf(zd_t('DIENST.M_GERASTERT'), $sollwert,
+                                        (int) $cfg['schrittweite']);
+            }
             $bau = zd_befehl_bauen($g, $aktion, $sollwert);
             break;
 
@@ -1933,11 +1931,28 @@ function zd_rueckfall_pruefen($nr, array $g, array $cfg)
             . ' nicht moeglich: ' . (isset($bau['meldung']) ? $bau['meldung'] : '?'), 3600);
         return;
     }
+    /* Zwischen zwei Versuchen dieselbe Schreibbremse wie fuer Befehle. */
+    list($zd_frei) = zd_bremse_pruefen($nr, $cfg);
+    if (!$zd_frei) {
+        return;
+    }
     list($ok, $m) = zd_befehl_senden($bau, $g);
     $GLOBALS['zd_letzte_schreibzeit'][$nr] = time();
+    /* Weist das Geraet das "aus" ab, bleibt der Sollmerker stehen, und der
+     * naechste Durchgang versucht es erneut (Befund Code 6, 29.09.2026). Bis
+     * 0.9.27 wurde der Merker bedingungslos geraeumt: bei HTTP 500 gab es
+     * keinen zweiten Versuch, der Speicher entlud weiter, und das Protokoll
+     * sagte trotzdem "die Regie geht an das Geraet zurueck". */
+    if (!$ok) {
+        zd_log_gebremst('rueckfall_fehl_' . (int) $nr, 'Rueckfall fuer Geraet ' . $nr . ' ('
+            . $g['name'] . ') GESCHEITERT: ' . $m . ' - der letzte Sollwert bleibt am Geraet '
+            . 'stehen. Neuer Versuch in jedem Durchgang, hoechstens alle '
+            . max(0, min(600, (int) $cfg['schreibbremse'])) . ' s.', 300);
+        return;
+    }
     zd_log('Rueckfall: seit ' . (int) $cfg['rueckfall_min'] . ' Minuten kam kein Sollwert '
-         . 'mehr fuer Geraet ' . $nr . ' (' . $g['name'] . ') - die Regie geht an das '
-         . 'Geraet zurueck (ok=' . (int) $ok . ' ' . $m . ').');
+         . 'mehr fuer Geraet ' . $nr . ' (' . $g['name'] . ') - die Regie ging an das '
+         . 'Geraet zurueck (' . $m . ').');
     // Den Sollmerker raeumen, damit der Rueckfall genau einmal greift.
     $alle = zd_soll_alle();
     unset($alle[(string) (int) $nr]);
@@ -2024,6 +2039,7 @@ function zd_abbild_schreiben(array $geraete, array $cfg)
         zd_rueckfall_pruefen($nr, $g, $cfg);
     }
 
+    $zd_zaehler = zd_herzschlag();
     zd_json_schreiben($p['datadir'] . '/loxone.json', array(
         /* Der Herzschlag: ein Zaehler, der mit jedem Durchgang weiterlaeuft
          * und bei 999 wieder von vorn beginnt.
@@ -2035,7 +2051,7 @@ function zd_abbild_schreiben(array $geraete, array $cfg)
          * Zaehler nicht. Er ist ausserdem das einfachere Alarmsignal in
          * Loxone: ein Wert, der sich nicht mehr aendert, statt eines Werts,
          * der ueber eine Schwelle steigt. */
-        'zaehler' => zd_herzschlag(),
+        'zaehler' => $zd_zaehler,
         'ok'      => $irgendetwas,
         'ts'      => time(),
         'anzahl'  => count($werte),
@@ -2051,52 +2067,18 @@ function zd_abbild_schreiben(array $geraete, array $cfg)
         if ($praefix === '') {
             $praefix = 'zendure';
         }
-        $paare = array('ok' => $irgendetwas, 'geraete' => count($werte));
-        foreach ($werte as $nr => $w) {
-            foreach (array('soc', 'pv', 'haus', 'netz', 'batp', 'laden', 'entladen',
-                           'grenze_aus', 'grenze_ein', 'soc_min', 'soc_max', 'acmodus',
-                           'packs', 'dvolt', 'temp', 'soll') as $feld) {
-                $paare['geraet' . $nr . '/' . $feld] = $w[$feld];
-            }
-            $paare['geraet' . $nr . '/online'] = $w['ok'];
-            // null heisst "keine Aussage" und wird von zd_mqtt_senden()
-            // ausgelassen - ein gesendetes 0 waere hier eine Falschaussage.
-            $paare['geraet' . $nr . '/sollok'] = $w['sollok'];
-            $paare['geraet' . $nr . '/ms'] = $w['ms'];
-            // Energie in kWh: was Loxone und der Energiefluss-Monitor wollen.
-            if (!empty($cfg['energie_ein'])) {
-                foreach (array('tag' => 'heute', 'monat' => 'monat', 'jahr' => 'jahr') as $zr => $name) {
-                    foreach (zd_energie_summe($nr, $zr) as $ef => $wh) {
-                        $paare['geraet' . $nr . '/energie/' . $name . '/' . $ef] = round($wh / 1000, 3);
-                    }
-                }
-                $kz = zd_energie_kennzahlen($nr, $geraete[$nr]);
-                $paare['geraet' . $nr . '/energie/gesamt/laden'] = round($kz['geladen_wh'] / 1000, 3);
-                $paare['geraet' . $nr . '/energie/gesamt/entladen'] = round($kz['entladen_wh'] / 1000, 3);
-                $paare['geraet' . $nr . '/energie/wirkungsgrad'] = $kz['wirkungsgrad'];
-                $paare['geraet' . $nr . '/energie/zyklen'] = $kz['zyklen'];
-            }
-            foreach ($w['packliste'] as $sn => $pk) {
-                /* Die Seriennummer kommt aus packData[].sn, also vom Geraet -
-                 * das Plugin hat sie nicht in der Hand. Ungesaeubert zerlegt
-                 * ein Leerzeichen darin die Uebertragung zum Gateway, das
-                 * zeilenweise liest und Thema und Wert am Leerzeichen trennt.
-                 * Gemessen an 0.9.8, Pruefstand p9_name.php. */
-                $skenn = zd_mqtt_thema_teil($sn);
-                foreach (array('soc', 'volt', 'dvolt', 'temp', 'watt') as $feld) {
-                    $paare['geraet' . $nr . '/pack/' . $skenn . '/' . $feld] = $pk[$feld];
-                }
-            }
-        }
-        // Summe ueber alle Geraete - nur, wenn es mehr als eines gibt.
-        if (count($werte) > 1) {
-            foreach (zd_summe($werte, $geraete) as $sf => $sv) {
-                if ($sf !== 'ok' && $sf !== 'n' && $sf !== 'nok') {
-                    $paare['summe/' . $sf] = $sv;
-                }
-            }
-        }
+        /* Die Paare baut seit 0.9.28 zd_mqtt_paare() in der Bibliothek:
+         * dieselbe Funktion haelt der Reiter Test gegen die Themenliste (M10);
+         * dort stehen auch M3 (Summe) und M7 (bei Stoerung nur online). */
+        $paare = zd_mqtt_paare($werte, $geraete, $cfg, $irgendetwas, $praefix);
         zd_mqtt_senden_bei_aenderung($paare, $praefix, $cfg);
+        // Lebenszeichen am Aenderungsfilter vorbei, hoechstens alle 30 s (M1).
+        if (time() - (int) $GLOBALS['zd_leben_ts'] >= 30
+            && zd_mqtt_senden(zd_mqtt_lebenszeichen(time(), $zd_zaehler), $praefix)) {
+            $GLOBALS['zd_leben_ts'] = time();
+        }
+        // Was nicht mehr entsteht, abraeumen und nachlesen (M4).
+        zd_mqtt_verwaiste_raeumen(zd_mqtt_soll_retained($werte, $praefix));
     }
     return $werte;
 }
@@ -2176,6 +2158,9 @@ function zd_dienst_schleife($einmal = false)
         zd_log('Konfiguration vervollstaendigt: ' . $zd_cmeld);
     }
     $cfg = zd_config();
+    // Die Abo-Datei des Gateways auf das eingestellte Praefix (M9).
+    $zd_abo = trim((string) $cfg['mqtt_topic'], '/');
+    zd_abo_datei($zd_abo === '' ? 'zendure' : $zd_abo, true);
     $geraete = zd_geraete();
     if (!$geraete) {
         /* Bis 0.9.11 beendete sich der Dienst hier. Das ist genau falsch
@@ -2208,6 +2193,7 @@ function zd_dienst_schleife($einmal = false)
 
     zd_horcher_sicherstellen($geraete);
     zd_durchgang($geraete, $cfg);
+    $zd_letzter_durchgang = time();
     if ($einmal) {
         zd_horcher_beenden();
         return 0;
@@ -2220,6 +2206,10 @@ function zd_dienst_schleife($einmal = false)
         }
         // Ohne pcntl gibt es kein Signal - dann beendet das Startskript den
         // Prozess hart. Der Merker sorgt fuer den geordneten Weg.
+        // Ohne clearstatcache sah ein Dienst das Fehlen erst einen Takt
+        // spaeter (Befund Code 9, 29.09.2026: is_file() nach externem rm
+        // weiter true).
+        clearstatcache(true, zd_paths()['soll']);
         if (!is_file(zd_paths()['soll'])) {
             zd_log('Der Merker soll_laufen ist weg - Dienst haelt an.');
             break;
@@ -2232,7 +2222,11 @@ function zd_dienst_schleife($einmal = false)
         // Geraeteliste aendern muss.
         zd_horcher_sicherstellen($geraete);
         if (zd_warteschlange($geraete, $cfg)) {
-            $naechster = 0;   // Sofortabruf gewuenscht
+            /* Sofortabruf, aber hoechstens einer je max(10 s, Takt/2), der
+             * Taktabruf zaehlt mit (Befund Code 7, 29.09.2026: bis 0.9.27
+             * ergaben 10 Aufrufe in 2 s zehn Geraeteabrufe). */
+            $zd_abstand = max(10, (int) floor(max(5, (int) $cfg['intervall']) / 2));
+            $naechster = min($naechster, max(time(), $zd_letzter_durchgang + $zd_abstand));
         }
 
         if (time() >= $naechster) {
@@ -2250,6 +2244,7 @@ function zd_dienst_schleife($einmal = false)
             // herausnimmt, will es meist gleich durch ein anderes ersetzen -
             // und braucht dafuer die Suche, die in diesem Dienst laeuft.
             zd_durchgang($geraete, $cfg);
+            $zd_letzter_durchgang = time();
             $naechster = time() + max(5, (int) $cfg['intervall']);
         } else {
             // Der Horcher darf nicht warten muessen: kurze Runden, damit
@@ -2426,6 +2421,35 @@ if (in_array('--mqtt-leeren', $zd_argv, true)) {
 ini_set('log_errors', '1');
 ini_set('display_errors', '0');
 ini_set('error_log', zd_paths()['log']);
+
+/* Eine eigene Sperre des Dienstes (Befund Code 9, 29.09.2026).
+ *
+ * bin/dienst.sh sperrt nur die Startskripte. Ein von Hand gestarteter
+ * zweiter Dienst lief bis 0.9.27 neben dem ersten, auf derselben
+ * Warteschlange und denselben Energiezaehlern. Jetzt haelt jeder Dienst bis
+ * zu seinem Ende eine nicht blockierende flock-Sperre auf dienst.lock im
+ * Datenordner; wer sie nicht bekommt, endet sofort mit Rueckgabe 3.
+ *
+ * Geoeffnet mit 'e' (close-on-exec): die Sperre vererbt sich NICHT an
+ * mosquitto_sub (proc_open) oder mosquitto_pub (exec). Ohne das hielte ein
+ * ueberlebender Horcher die Sperre, und kein Neustart gelaenge mehr
+ * (Fehlerklasse 3 des Durchgangs, Merkblatt "Sperre vererbt sich an
+ * Kinder"). Laesst sich die Datei nicht oeffnen, laeuft der Dienst ohne
+ * eigene Sperre weiter und sagt es - eine fehlende Sperre ist ein Nachteil,
+ * ein nie startender Dienst ein Ausfall. */
+$zd_sperrdatei = zd_paths()['datadir'] . '/dienst.lock';
+if (!is_dir(zd_paths()['datadir'])) {
+    @mkdir(zd_paths()['datadir'], 0775, true);
+}
+$GLOBALS['zd_sperre'] = @fopen($zd_sperrdatei, 'ce');
+if ($GLOBALS['zd_sperre'] === false) {
+    zd_log('Die Sperrdatei ' . $zd_sperrdatei . ' liess sich nicht oeffnen - der Dienst laeuft '
+         . 'ohne eigene Sperre.');
+} elseif (!@flock($GLOBALS['zd_sperre'], LOCK_EX | LOCK_NB)) {
+    zd_log('Ein zweiter Dienst (PID ' . getmypid() . ') wurde beendet: ein anderer Dienst haelt '
+         . 'die Sperre ' . $zd_sperrdatei . '.');
+    exit(3);
+}
 
 if (function_exists('pcntl_signal')) {
     pcntl_signal(SIGTERM, 'zd_signal_behandeln');

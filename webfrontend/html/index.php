@@ -61,20 +61,58 @@ header('Content-Type: text/plain; charset=utf-8');
  * angemeldeten Oberflaeche und beim Dienststart. */
 $zd_cfg = zd_config(false);
 
+/* Ein Anfragewert: null (fehlt), false (keine Zeichenkette, etwa token[]=x)
+ * oder die Zeichenkette. Erst is_string, dann alles andere (Befund Code 10,
+ * 29.09.2026): bis 0.9.27 gab (string) auf eine Liste unter PHP 8 eine
+ * Warnung, und die Abweisung kam danach als HTTP 200. */
+function zd_get_text($name)
+{
+    if (!isset($_GET[$name])) {
+        return null;
+    }
+    return is_string($_GET[$name]) ? $_GET[$name] : false;
+}
+
+/* Jede Abweisung ins Protokoll, mit der Adresse des Anrufers, hoechstens
+ * eine Zeile je Minute und Grund; nie das Token (Befund Code 8, 29.09.2026:
+ * bis 0.9.27 schrieb dieser Endpunkt auf keinem Weg eine Zeile). */
+function zd_ep_abweisung($grund, $aktion = '')
+{
+    $wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
+    $akt = is_string($aktion) ? substr(preg_replace('/[^a-z0-9_]/i', '', $aktion), 0, 20) : '';
+    zd_log_gebremst('ep_' . strtolower($grund), 'Endpunkt: Anfrage von ' . ($wer === '' ? '?' : $wer)
+        . ' abgewiesen, Grund ' . $grund . ($akt !== '' ? ', Aktion ' . $akt : '') . '.', 60);
+}
+
 /* ---------------- Token ---------------- */
-$zd_soll = (string) $zd_cfg['aktionstoken'];
-$zd_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+$zd_soll = $zd_cfg['aktionstoken'];
+$zd_ist = zd_get_text('token');
+if (!is_string($zd_ist)) {
+    $zd_ist = '';
+}
 /* Ein falsches Token bekommt beim Selbsttest DIESELBE Abweisung wie sonst
  * auch - er darf keine Abkuerzung an der Sicherheit vorbei sein. */
-$zd_selftest = isset($_GET['selftest']) && (string) $_GET['selftest'] === '1';
-if ($zd_soll === '') {
+$zd_selftest = zd_get_text('selftest') === '1';
+if ($zd_soll === null || (is_string($zd_soll) && trim($zd_soll) === '')) {
+    zd_ep_abweisung('KEIN_TOKEN_GESETZT');
     http_response_code(403);
     echo $zd_selftest ? "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n"
                       : "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
     exit;
 }
+/* Ein gespeichertes Token, das nicht dem Muster des Erzeugers entspricht,
+ * schaltet nichts frei (Befund U4, 29.09.2026: eine Sicherung mit Token als
+ * Liste machte bis 0.9.27 "token=Array" zum gueltigen Token). */
+if (!zd_token_gueltig($zd_soll)) {
+    zd_ep_abweisung('TOKEN_UNGUELTIG');
+    http_response_code(403);
+    echo $zd_selftest ? "SELFTEST;OK=0;ERR=TOKEN_UNGUELTIG\n" : "FEHLER;OK=0;GRUND=TOKEN_UNGUELTIG\n";
+    echo "Das gespeicherte Aktionstoken hat nicht die Form, die das Plugin erzeugt. Reiter Einbindung in Loxone, Neues Token erzeugen.\n";
+    exit;
+}
 if (!hash_equals($zd_soll, $zd_ist)) {
+    zd_ep_abweisung('TOKEN');
     http_response_code(403);
     echo $zd_selftest ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FEHLER;OK=0;GRUND=TOKEN\n";
     exit;
@@ -101,8 +139,12 @@ if ($zd_selftest) {
 /* ---------------- Aktion (Weissliste) ---------------- */
 $zd_lesend = array('status', 'packs', 'liste', 'roh', 'rohgeraet', 'summe', 'energie');
 $zd_schaltend = array('laden', 'entladen', 'aus', 'socmin', 'socmax', 'grenzeaus', 'grenzeein', 'abruf');
-$zd_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
-if (!in_array($zd_aktion, array_merge($zd_lesend, $zd_schaltend), true)) {
+$zd_aktion = zd_get_text('aktion');
+if ($zd_aktion === null) {
+    $zd_aktion = 'status';
+}
+if (!is_string($zd_aktion) || !in_array($zd_aktion, array_merge($zd_lesend, $zd_schaltend), true)) {
+    zd_ep_abweisung('UNBEKANNTE_AKTION', is_string($zd_aktion) ? $zd_aktion : '');
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
     echo 'Erlaubt sind: ' . implode(', ', array_merge($zd_lesend, $zd_schaltend)) . "\n";
@@ -118,8 +160,9 @@ function zd_param($name, $muster, $vorgabe = '')
     if (!isset($_GET[$name]) || $_GET[$name] === '') {
         return $vorgabe;
     }
-    $w = (string) $_GET[$name];
-    if (!preg_match($muster, $w)) {
+    $w = $_GET[$name];
+    if (!is_string($w) || !preg_match($muster, $w)) {
+        zd_ep_abweisung('PARAMETER', $GLOBALS['zd_aktion']);
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=PARAMETER\n";
         echo 'Der Wert von ' . $name . " passt nicht ins erlaubte Muster.\n";
@@ -128,13 +171,17 @@ function zd_param($name, $muster, $vorgabe = '')
     return $w;
 }
 
-$zd_nr      = zd_param('geraet', '/^[0-9]{1,2}$/', '1');
-$zd_zeitraum = zd_param('zeitraum', '/^(tag|monat|jahr)$/', 'tag');
-$zd_watt    = zd_param('watt', '/^[0-9]{1,5}$/', '');
-$zd_prozent = zd_param('prozent', '/^[0-9]{1,3}$/', '');
+/* Die Muster enden auf \z, nicht auf $ (Befund Code 5, 29.09.2026; Regeln/05):
+ * "$" laesst einen abschliessenden Zeilenumbruch durch. Bis 0.9.27 bestand
+ * "dry=1%0A" das Muster, der Vergleich mit '1' aber nicht - ein als
+ * Trockenlauf gemeinter Aufruf schaltete den Speicher wirklich (1 POST). */
+$zd_nr      = zd_param('geraet', '/^[0-9]{1,2}\z/', '1');
+$zd_zeitraum = zd_param('zeitraum', '/^(tag|monat|jahr)\z/', 'tag');
+$zd_watt    = zd_param('watt', '/^[0-9]{1,5}\z/', '');
+$zd_prozent = zd_param('prozent', '/^[0-9]{1,3}\z/', '');
 /* Trockenlauf: rechnet den Befehl vollstaendig fertig und sendet ihn NICHT.
  * Nur 0 oder 1 - alles andere wird abgewiesen wie jeder andere Parameter. */
-$zd_dry     = zd_param('dry', '/^[01]$/', '0') === '1';
+$zd_dry     = zd_param('dry', '/^[01]\z/', '0') === '1';
 
 /** Ein Strich statt einer erfundenen 0. Loxone behaelt dann den letzten Wert. */
 function zd_w($v)
@@ -146,7 +193,9 @@ function zd_w($v)
 }
 
 $zd_lox = zd_loxone();
-$zd_alle = zd_werte();
+/* OK und ALTER zur Abrufzeit (Befund Code 2, Entscheidung 4): siehe
+ * zd_werte_jetzt(). */
+$zd_alle = zd_werte_jetzt($zd_cfg);
 $zd_alter = zd_alter();
 $zd_g = isset($zd_alle[$zd_nr]) ? $zd_alle[$zd_nr] : null;
 
@@ -240,7 +289,13 @@ if ($zd_aktion === 'energie') {
 }
 
 if ($zd_aktion === 'liste') {
-    echo 'LISTE;OK=' . (int) (!empty($zd_lox['ok'])) . ';N=' . count($zd_alle) . ';ALTER=' . $zd_alter . "\n";
+    $zd_lok = 0;
+    foreach ($zd_alle as $zd_lg) {
+        if (!empty($zd_lg['ok'])) {
+            $zd_lok = 1;
+        }
+    }
+    echo 'LISTE;OK=' . $zd_lok . ';N=' . count($zd_alle) . ';ALTER=' . $zd_alter . "\n";
     foreach ($zd_alle as $nr => $g) {
         /* Der Name geht durch zd_zeilenwert(): er ist frei getippt, und ein
          * Semikolon oder Gleichheitszeichen darin schoebe die Felder dieser
@@ -301,27 +356,16 @@ if ($zd_aktion === 'status') {
 
 /* ================= Schaltende Aktionen ================= */
 
-// Der Trockenlauf sendet nichts und braucht die Freigabe deshalb nicht.
-if ($zd_aktion !== 'abruf' && !$zd_dry && empty($zd_cfg['steuerung_ein'])) {
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
-    exit;
-}
-if (zd_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
+/* Erst die Anfrage, dann Freigabe und Dienst (Befund Code 12, 29.09.2026;
+ * Regeln/03): bis 0.9.27 bekam "laden" ohne watt bei stehendem Dienst 503
+ * DIENST_LAEUFT_NICHT statt 400 WATT_FEHLT. */
 $zd_befehl = array('aktion' => $zd_aktion, 'geraet' => (int) $zd_nr);
 if ($zd_dry) {
     $zd_befehl['trocken'] = 1;
 }
 if (in_array($zd_aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), true)) {
     if ($zd_watt === '') {
+        zd_ep_abweisung('WATT_FEHLT', $zd_aktion);
         http_response_code(400);
         echo "SET;OK=0;GRUND=WATT_FEHLT\n";
         exit;
@@ -329,11 +373,63 @@ if (in_array($zd_aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), t
     $zd_befehl['watt'] = (int) $zd_watt;
 } elseif (in_array($zd_aktion, array('socmin', 'socmax'), true)) {
     if ($zd_prozent === '') {
+        zd_ep_abweisung('PROZENT_FEHLT', $zd_aktion);
         http_response_code(400);
         echo "SET;OK=0;GRUND=PROZENT_FEHLT\n";
         exit;
     }
     $zd_befehl['prozent'] = (int) $zd_prozent;
+}
+
+// Der Trockenlauf sendet nichts und braucht die Freigabe deshalb nicht.
+if ($zd_aktion !== 'abruf' && !$zd_dry && empty($zd_cfg['steuerung_ein'])) {
+    zd_ep_abweisung('STEUERUNG_AUS', $zd_aktion);
+    http_response_code(403);
+    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
+    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
+    exit;
+}
+if (zd_dienst_pid() === 0) {
+    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
+    zd_ep_abweisung('DIENST_LAEUFT_NICHT', $zd_aktion);
+    http_response_code(503);
+    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
+    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
+    exit;
+}
+
+/* Sofortabruf mit Bremse (Befund Code 7, 29.09.2026; Regeln/03 "Jeder
+ * Ausloeser, den eine fremde Anlage bedient, braucht eine Bremse"): bis
+ * 0.9.27 ergaben 10 Aufrufe in 2 s zehn Geraeteabrufe mit je fuenf
+ * Schreibvorgaengen. Hoechstens ein Abruf je max(10 s, Takt/2); der
+ * Taktabruf (ts des Abbilds) zaehlt mit. Ein zu frueher Aufruf bekommt das
+ * vorhandene Abbild mit seinem ALTER. Die Pruefung laeuft unter flock, damit
+ * gleichzeitige Aufrufe einander nicht ueberholen. Auch ein Trockenlauf
+ * zaehlt: der Dienst ruft bei "abruf" in jedem Fall ab. */
+if ($zd_aktion === 'abruf') {
+    $zd_abstand = max(10, (int) floor(max(5, (int) $zd_cfg['intervall']) / 2));
+    $zd_warten = 0;
+    $zd_fh = @fopen(zd_paths()['datadir'] . '/.abruf_endpunkt', 'c+');
+    if ($zd_fh !== false) {
+        if (@flock($zd_fh, LOCK_EX)) {
+            $zd_letzt = (int) trim((string) stream_get_contents($zd_fh));
+            $zd_basis = max($zd_letzt, isset($zd_lox['ts']) ? (int) $zd_lox['ts'] : 0);
+            $zd_warten = $zd_basis + $zd_abstand - time();
+            if ($zd_warten <= 0) {
+                ftruncate($zd_fh, 0);
+                rewind($zd_fh);
+                fwrite($zd_fh, (string) time());
+                fflush($zd_fh);
+            }
+            flock($zd_fh, LOCK_UN);
+        }
+        fclose($zd_fh);
+    }
+    if ($zd_warten > 0) {
+        printf("SET;OK=1;AKTION=abruf;GRUND=ZU_FRUEH;WARTEN=%d;ALTER=%d\n", $zd_warten, $zd_alter);
+        echo 'Hoechstens ein Sofortabruf je ' . $zd_abstand . " s - es gilt das vorhandene Abbild.\n";
+        exit;
+    }
 }
 
 list($zd_erg, $zd_meldung) = zd_befehl_absetzen($zd_befehl);

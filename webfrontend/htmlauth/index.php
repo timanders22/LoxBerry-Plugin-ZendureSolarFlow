@@ -80,6 +80,8 @@ $zd_meldungen = array();
 $zd_fehler = array();      // gesammelt, nicht ueberschrieben
 $zd_testausgabe = '';
 $zd_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+// Jeder POST endet mit 303, auch einer mit ungueltigem Merkmal (U1).
+$zd_post_roh = $zd_post;
 
 /* ---------------- Wachposten gegen fremde Formulare ----------------
  *
@@ -128,6 +130,17 @@ if ($zd_post) {
     }
 }
 
+/* Die Einmalmeldung der vorigen Anfrage - NUR beim GET (U1). Beim POST ist
+ * $zd_fehler der Sammler der Eingabepruefung. */
+if (!$zd_post_roh) {
+    $zd_einmal = zd_einmal_lesen();
+    if ($zd_einmal) {
+        $zd_meldungen = $zd_einmal['meldungen'];
+        $zd_fehler = array_merge($zd_fehler, $zd_einmal['fehler']);
+        $zd_testausgabe = $zd_einmal['test'];
+    }
+}
+
 /* ---------------- Vorlage herunterladen ----------------
  *
  * Bis 0.9.10 gab es genau einen Knopf, und er war fest auf Geraet 1
@@ -156,7 +169,9 @@ if ($zd_post && isset($_POST['vorlage'])) {
         if ($zd_name === '') {
             /* Kein Archiv moeglich - dann sagen warum, statt eine kaputte
              * Datei auszuliefern. Der Grund steht in $zd_inhalt. */
-            $zd_fehler[] = zd_e($zd_inhalt);
+            // Schon HTML-sicher (Werte maskiert); die Auszeichnung der
+            // Sprachdatei wird dargestellt, nicht maskiert (U6).
+            $zd_fehler[] = $zd_inhalt;
             $zd_tab = 'tab-loxone';
         }
     } else {
@@ -225,7 +240,12 @@ if ($zd_post && isset($_POST['konfig_erg'])) {
 
 /* ---------------- Konfiguration zurueckspielen ---------------- */
 if ($zd_post && isset($_POST['konfig_ein'])) {
+    /* Nur eine wirklich hochgeladene, einzelne Datei (Hausmuster, Werkzeuge/sicherung_pruefen.py):
+       konfig_datei[] liefert Listen statt Zeichenketten, und ohne is_uploaded_file() liesse sich ein
+       beliebiger Pfad als tmp_name unterschieben. Bis 0.9.27 fehlte beides. */
     if (!isset($_FILES['konfig_datei']) || !is_array($_FILES['konfig_datei'])
+        || !isset($_FILES['konfig_datei']['tmp_name']) || !is_string($_FILES['konfig_datei']['tmp_name'])
+        || !is_uploaded_file($_FILES['konfig_datei']['tmp_name'])
         || (int) $_FILES['konfig_datei']['error'] !== 0) {
         $zd_fehler[] = zd_t('EINST.KONFIG_KEINE_DATEI');
     } elseif ((int) $_FILES['konfig_datei']['size'] > 262144) {
@@ -234,11 +254,25 @@ if ($zd_post && isset($_POST['konfig_ein'])) {
     } else {
         $zd_inhalt = (string) @file_get_contents($_FILES['konfig_datei']['tmp_name']);
         list($zd_kok, $zd_kmeld) = zd_konfig_einfuhr($zd_inhalt);
+        // Die Meldung ist HTML-sicher (U6): Auszeichnung dargestellt, Werte maskiert.
         if ($zd_kok) {
-            $zd_meldungen[] = zd_e($zd_kmeld);
+            $zd_meldungen[] = $zd_kmeld;
             zd_log('Konfiguration aus einer Sicherung zurueckgespielt.');
+            /* Den laufenden Dienst nachziehen und das Ergebnis melden (U5).
+             * Bis 0.9.27 stand nur "Bitte den Dienst neu starten". */
+            if (zd_dienst_pid() > 0) {
+                list($zd_rok, $zd_raus) = zd_dienst('restart');
+                clearstatcache();
+                if ($zd_rok && zd_dienst_pid() > 0) {
+                    $zd_meldungen[] = zd_t('EINST.SICH_DIENST_NEU');
+                } else {
+                    $zd_fehler[] = zd_t('EINST.SICH_DIENST_FEHL') . ' ' . zd_e($zd_raus);
+                }
+            } else {
+                $zd_meldungen[] = zd_t('EINST.SICH_DIENST_AUS');
+            }
         } else {
-            $zd_fehler[] = zd_e($zd_kmeld);
+            $zd_fehler[] = $zd_kmeld;
         }
     }
     $zd_tab = 'tab-settings';
@@ -433,6 +467,12 @@ if ($zd_post && isset($_POST['speichern'])) {
                 $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_GRENZE'), $i + 1);
                 continue;
             }
+            // Beanstanden statt still kappen (U12): bis 0.9.27 wurde 9999
+            // gespeichert und wirkte still als 5000.
+            if ((int) $w > 5000) {
+                $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_GRENZE_MAX'), $i + 1, 5000);
+                continue;
+            }
             $zd_zeile[$feld] = (int) $w;
         }
         $zd_neu[$i] = $zd_zeile;
@@ -441,25 +481,10 @@ if ($zd_post && isset($_POST['speichern'])) {
     ksort($zd_neu);
     $zd_cfg['geraete'] = array_values($zd_neu);
 
-    foreach (array(
-        'intervall'     => array(5, 900),
-        'schreibbremse' => array(0, 600),
-        'schrittweite'  => array(1, 500),
-        'verlauf_tage'  => array(1, 90),
-        'wartezeit'     => array(0, 20),
-        'quittung_nachlauf' => array(0, 900),
-        'totband_w'            => array(0, 5000),
-        'totband_auffrischung' => array(0, 86400),
-        'rueckfall_min'     => array(0, 1440),
-        'befehl_verfall_s'  => array(0, 86400),
-        'schutz_soc_min'    => array(0, 100),
-        'schutz_soc_max'    => array(0, 100),
-        'energie_monate'    => array(1, 120),
-        /* mqtt_auffrischung steht bewusst NICHT hier: das Feld wohnt im
-         * Reiter MQTT und wird vom dortigen Handler gelesen. Stuende es in
-         * dieser Liste, beanstandete das Einstellungsformular es bei jedem
-         * Speichern - es schickt das Feld ja gar nicht mit. */
-    ) as $zd_feld => $zd_grenzen) {
+    /* Die Grenzen stehen seit 0.9.28 in zd_grenzen() - dieselbe Tabelle
+     * prueft das Zurueckspielen einer Sicherung (U4). mqtt_auffrischung
+     * steht bewusst NICHT darin: das Feld wohnt im Reiter MQTT. */
+    foreach (zd_grenzen() as $zd_feld => $zd_grenzen) {
         $zd_wert = isset($_POST[$zd_feld]) ? trim((string) $_POST[$zd_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $zd_wert)) {
             $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZAHL'), zd_t('EINST.L_' . strtoupper($zd_feld)));
@@ -509,8 +534,10 @@ if ($zd_post && isset($_POST['speichern'])) {
         list($zd_praefix, $zd_schluessel, $zd_karte) = $zd_zk;
         $zd_neuz = array();
         foreach ($zd_karte as $zd_feld => $zd_vorgabe) {
-            $zd_w = isset($_POST[$zd_praefix . $zd_feld])
-                  ? trim(preg_replace('/[^A-Za-z0-9_]/', '', (string) $_POST[$zd_praefix . $zd_feld])) : '';
+            // Beanstanden statt Zeichen entfernen (U12): bis 0.9.27 wurde
+            // "my.prop-Name" still zu "mypropName".
+            $zd_w = (isset($_POST[$zd_praefix . $zd_feld]) && is_string($_POST[$zd_praefix . $zd_feld]))
+                  ? trim($_POST[$zd_praefix . $zd_feld]) : '';
             if ($zd_w === '' || $zd_w === $zd_vorgabe) {
                 continue;
             }
@@ -542,13 +569,21 @@ if ($zd_post && isset($_POST['speichern'])) {
  * Werte, die er nie gesehen hat. */
 if ($zd_post && isset($_POST['save_mqtt'])) {
     $zd_mcfg = zd_config();
+    // Der Stand VOR dem Speichern - fuer das Leeren unter dem alten Praefix (M5/M6).
+    $zd_alt_ein = !empty($zd_mcfg['mqtt_ein']);
+    $zd_alt_pr = trim((string) $zd_mcfg['mqtt_topic'], '/');
+    if ($zd_alt_pr === '') {
+        $zd_alt_pr = 'zendure';
+    }
     $zd_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
-    $zd_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
-    if ($zd_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $zd_mtopic)) {
+    /* Beanstanden statt zurechtbiegen (U12): bis 0.9.27 wurden "/" und "///"
+     * still zu '' und gespeichert, das Abo lautete danach "/#". */
+    $zd_mtopic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']))
+               ? trim($_POST['mqtt_topic']) : '';
+    if (!zd_topic_gueltig($zd_mtopic)) {
         $zd_fehler[] = zd_t('EINST.FEHLER_TOPIC');
     } else {
-        $zd_mcfg['mqtt_topic'] = trim($zd_mtopic, '/');
+        $zd_mcfg['mqtt_topic'] = $zd_mtopic;
     }
     $zd_bp = isset($_POST['broker_port']) ? trim((string) $_POST['broker_port']) : '';
     if (preg_match('/^[0-9]+$/', $zd_bp) && (int) $zd_bp >= 1 && (int) $zd_bp <= 65535) {
@@ -564,17 +599,26 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
         $zd_mcfg['broker_host'] = $zd_bh;
     }
     $zd_ma = isset($_POST['mqtt_auffrischung']) ? trim((string) $_POST['mqtt_auffrischung']) : '';
-    if (preg_match('/^[0-9]+$/', $zd_ma) && (int) $zd_ma <= 86400) {
+    // Hoechstens 3600 s (M8); bis 0.9.27 bis 86400.
+    if (preg_match('/^[0-9]+$/', $zd_ma) && (int) $zd_ma <= 3600) {
         $zd_mcfg['mqtt_auffrischung'] = (int) $zd_ma;
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_BEREICH'),
-            zd_t('EINST.L_MQTT_AUFFR'), 0, 86400);
+            zd_t('EINST.L_MQTT_AUFFR'), 0, 3600);
     }
     $zd_mcfg['broker_user'] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_user']) ? $_POST['broker_user'] : '')));
     // Leeres Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
     // Passwort in der Konfiguration, ohne dass es jemand merkt.
-    $zd_bpw = isset($_POST['broker_pw']) ? (string) $_POST['broker_pw'] : '';
-    if ($zd_bpw !== '') {
+    $zd_bpw = (isset($_POST['broker_pw']) && is_string($_POST['broker_pw'])) ? $_POST['broker_pw'] : '';
+    /* Geloescht wird ueber einen Haken daneben (U13, Regeln/04): bis 0.9.27
+     * liess sich ein einmal eingetragenes Passwort nie mehr entfernen.
+     * Neues Passwort UND Haken zugleich ist ein Widerspruch. */
+    $zd_bpw_weg = !empty($_POST['broker_pw_loeschen']);
+    if ($zd_bpw_weg && $zd_bpw !== '') {
+        $zd_fehler[] = zd_t('EINST.FEHLER_PW_WIDERSPRUCH');
+    } elseif ($zd_bpw_weg) {
+        $zd_mcfg['broker_pw'] = '';
+    } elseif ($zd_bpw !== '') {
         $zd_mcfg['broker_pw'] = $zd_bpw;
     }
     /* Auch hier gilt: jeder beanstandete Wert wurde oben uebergangen, also
@@ -588,6 +632,36 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
      * Broker-Passwort war still verloren. */
     if (zd_config_speichern($zd_mcfg)) {
         $zd_meldungen[] = $zd_fehler ? zd_t('EINST.GESPEICHERT_TEILWEISE') : zd_t('EINST.GESPEICHERT');
+        $zd_neu_ein = !empty($zd_mcfg['mqtt_ein']);
+        $zd_neu_pr = trim((string) $zd_mcfg['mqtt_topic'], '/');
+        if ($zd_neu_pr === '') {
+            $zd_neu_pr = 'zendure';
+        }
+        /* Praefixwechsel oder Abschalten: die retained Themen unter dem
+         * ALTEN Praefix leeren und beim Broker nachlesen (M5/M6; Bauform
+         * KODI-NG 1.2.12). Bis 0.9.27 blieben unter "zendure" alle 27
+         * Zustaende fuer immer stehen, auch nach der Deinstallation. */
+        if ($zd_alt_ein && (!$zd_neu_ein || $zd_neu_pr !== $zd_alt_pr)) {
+            ob_start();
+            $zd_lrc = zd_mqtt_leeren(3, 1.0, $zd_alt_pr);
+            $zd_lroh = trim(preg_replace('/<(OK|INFO|WARNING)> /', '', (string) ob_get_clean()));
+            $zd_anlass = $zd_neu_ein
+                ? sprintf(zd_t('MQTT.M_LEEREN_WECHSEL'), zd_e($zd_alt_pr), zd_e($zd_neu_pr))
+                : sprintf(zd_t('MQTT.M_LEEREN_AUS'), zd_e($zd_alt_pr));
+            if ($zd_lrc === 0) {
+                $zd_meldungen[] = $zd_anlass . '<br>' . nl2br(zd_e($zd_lroh));
+            } else {
+                $zd_fehler[] = $zd_anlass . '<br>' . nl2br(zd_e($zd_lroh));
+            }
+            zd_log('MQTT beim Speichern unter ' . $zd_alt_pr . '/ geleert (Rueckgabe ' . (int) $zd_lrc . ').');
+        }
+        /* Nach einem Praefixwechsel und beim Einschalten ist der naechste
+         * Lauf ein Vollversand (M5): bis 0.9.27 bekam das neue Praefix bis
+         * zur naechsten Auffrischung nur 7 von 27 Zustaenden. */
+        if ($zd_neu_pr !== $zd_alt_pr || ($zd_neu_ein && !$zd_alt_ein)) {
+            @unlink($zd_p['datadir'] . '/mqtt_letzte.json');
+        }
+        zd_abo_datei($zd_neu_pr, true);     // M9
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_SPEICHERN'), $zd_p['config']);
     }
@@ -598,8 +672,16 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
 if ($zd_post && isset($_POST['dienst'])) {
     $zd_befehl = (string) $_POST['dienst'];
     list($zd_ok, $zd_ausgabe) = zd_dienst($zd_befehl);
-    if ($zd_ok) {
+    /* "Dienst gestartet." nur nach Nachmessung (U14): bis 0.9.27 stand es
+     * auch da, wenn dienst.sh wegen der Upgrade-Marke gar nicht startete. */
+    clearstatcache();
+    $zd_pid_nach = zd_dienst_pid();
+    if ($zd_ok && ($zd_befehl === 'stop' ? $zd_pid_nach === 0 : $zd_pid_nach > 0)) {
         $zd_meldungen[] = zd_t('EINST.DIENST_' . strtoupper($zd_befehl)) . ' ' . zd_e($zd_ausgabe);
+    } elseif ($zd_ok) {
+        $zd_fehler[] = ($zd_befehl === 'stop'
+            ? sprintf(zd_t('EINST.DIENST_STOP_NICHT'), $zd_pid_nach)
+            : zd_t('EINST.DIENST_START_NICHT')) . ' ' . zd_e($zd_ausgabe);
     } else {
         $zd_fehler[] = zd_e($zd_ausgabe);
     }
@@ -673,9 +755,27 @@ if ($zd_post && isset($_POST['temp_uebernehmen'])) {
     $zd_tab = 'tab-test';
 }
 
+/* ---------------- Nach dem POST: umleiten (U1) ----------------
+ *
+ * Befund Oberflaeche 1/2 (29.09.2026): kein Handler leitete um; F5 schickte
+ * "Entladen 600 W" ein zweites Mal in die Warteschlange. Jetzt endet jeder
+ * POST mit 303, auch einer mit ungueltigem Merkmal; Meldungen,
+ * Beanstandungen und die Ausgabe des Selbsttests reisen als Einmalmeldung.
+ * Die Downloads sind oben schon mit exit hinaus. Scheitert das Schreiben der
+ * Einmalmeldung, wird wie bisher direkt gezeigt. */
+if ($zd_post_roh && zd_einmal_schreiben($zd_meldungen, $zd_fehler, $zd_testausgabe)) {
+    header('Location: index.php?form=' . rawurlencode(substr($zd_tab, 4)), true, 303);
+    exit;
+}
+
 /* ---------------- Laden ---------------- */
 $zd_cfg = zd_config();
 $zd_token = zd_token();
+/* Das Merkmal NACH zd_token() bilden (U2): bis 0.9.27 entstand es vor den
+ * Handlern - nach "Neues Token" und auf einer frischen Installation (das
+ * Token entsteht erst hier) trugen alle Formulare ein altes bzw. leeres
+ * Merkmal, und der erste Klick wurde abgewiesen. */
+$zd_fmt = zd_formtoken();
 $zd_geraete = zd_geraete();
 $zd_werte = zd_werte();
 $zd_zustand = zd_zustand();
@@ -1235,6 +1335,10 @@ foreach (array(
   <label for="broker_pw"><?= zd_e(zd_t('EINST.L_BROKER_PW')) ?></label>
   <input data-role="none" type="password" id="broker_pw" name="broker_pw" value="" placeholder="<?= $zd_cfg['broker_pw'] !== '' ? zd_e(sprintf(zd_t('EINST.PW_GESETZT'), strlen((string) $zd_cfg['broker_pw']))) : zd_e(zd_t('EINST.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= zd_t('EINST.H_BROKER_PW') ?></div>
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="broker_pw_loeschen" value="1">
+    <?= zd_e(zd_t('EINST.L_BROKER_PW_LOESCHEN')) ?>
+  </label>
 </div>
 <h2>MQTT</h2>
 <div class="sm-feld">
@@ -1249,7 +1353,7 @@ foreach (array(
 </div>
 <div class="sm-feld">
   <label for="mqtt_auffrischung"><?= zd_e(zd_t('EINST.L_MQTT_AUFFR')) ?></label>
-  <input data-role="none" type="number" id="mqtt_auffrischung" name="mqtt_auffrischung" value="<?= (int) $zd_cfg['mqtt_auffrischung'] ?>" min="0" max="86400">
+  <input data-role="none" type="number" id="mqtt_auffrischung" name="mqtt_auffrischung" value="<?= (int) $zd_cfg['mqtt_auffrischung'] ?>" min="0" max="3600">
   <div class="sm-hilfe"><?= zd_t('EINST.H_MQTT_AUFFR') ?></div>
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span></div>
@@ -1384,6 +1488,7 @@ if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.A
 <?php } ?>
 </div>
 </form>
+<div class="sm-hinweis"><?= zd_t('LOX.IMPORT_DOPPELT') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= zd_t('LEGENDE.LESEN') ?></span>
 </div>

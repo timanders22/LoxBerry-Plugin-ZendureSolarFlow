@@ -369,9 +369,20 @@ function zd_json_schreiben($pfad, $daten, $rechte = null)
     if ($rechte !== null) {
         @chmod($tmp, $rechte);
     }
-    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
-    fflush($fh);
-    fclose($fh);
+    /* Geschrieben ist erst, was GANZ geschrieben ist und sich so
+     * zuruecklesen laesst (Befund Code 1, 29.09.2026). Bis 0.9.27 galt
+     * "fwrite !== false" als Erfolg: bei voller Karte liefert fwrite() die
+     * Zahl der geschriebenen Bytes, nicht false. In WSL gemessen (ulimit -f
+     * 1): 1024 von 1881 Byte, Rueckgabe true, Konfiguration UND Zweitschrift
+     * abgeschnitten, danach ein neues Aktionstoken. */
+    $n = ftruncate($fh, 0) ? @fwrite($fh, $json) : false;
+    $ok = ($n === strlen($json));
+    $ok = @fflush($fh) && $ok;
+    $ok = @fclose($fh) && $ok;
+    if ($ok) {
+        clearstatcache(true, $tmp);
+        $ok = (@file_get_contents($tmp) === $json);
+    }
     if (!$ok) {
         @unlink($tmp);
         return false;
@@ -493,11 +504,20 @@ function zd_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rech
             . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
         return false;
     }
-    @copy($quelle, $ziel);
-    if ($rechte !== null) {
-        @chmod($ziel, $rechte);
+    /* Erst die Quelle zuruecklesen, dann die Zweitschrift auf demselben
+     * Weg schreiben (Befund Code 1, 29.09.2026). Bis 0.9.27 stand hier ein
+     * @copy ohne Rueckgabepruefung, und die Zweitschrift wurde aus einer
+     * Hauptdatei gezogen, die niemand gelesen hatte - eine abgeschnittene
+     * Konfiguration stand danach zweimal da. */
+    clearstatcache(true, $quelle);
+    $zurueck = json_decode((string) @file_get_contents($quelle), true);
+    $fl = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+    if (!is_array($zurueck) || json_encode($zurueck, $fl) !== json_encode($neu, $fl)) {
+        zd_log('WARNUNG: ' . $quelle . ' traegt nach dem Schreiben nicht den gespeicherten Stand - '
+            . 'die Zweitschrift bleibt unveraendert: ' . $ziel);
+        return false;
     }
-    return true;
+    return zd_json_schreiben($ziel, $zurueck, $rechte);
 }
 
 /**
@@ -565,7 +585,7 @@ function zd_cfg_vervollstaendigen()
     zd_config();
     $lage = zd_cfg_lage();
     if (!$lage['fehlend']) {
-        return array(1, 0, 'Es fehlte nichts.');
+        return array(1, 0, zd_t('EINST.M_ERG_NICHTS'));
     }
     $datei = zd_json_lesen($p['config']);
     if (!is_array($datei)) {
@@ -576,9 +596,7 @@ function zd_cfg_vervollstaendigen()
      * Vorgaben ueber den abgeschnittenen Stand und machte ihn unlesbar, ohne
      * dass jemand das Token noch von Hand herausholen koennte. */
     if (!zd_config_hat_inhalt($datei)) {
-        return array(0, 0, 'Die Konfiguration traegt kein Aktionstoken - sie wird nicht '
-                         . 'vervollstaendigt. Der vorherige Inhalt liegt unter '
-                         . $p['config'] . '.kaputt.');
+        return array(0, 0, sprintf(zd_t('EINST.M_ERG_KEIN_TOKEN'), $p['config'] . '.kaputt'));
     }
     $vorgaben = zd_vorgaben();
     foreach ($lage['fehlend'] as $k) {
@@ -590,12 +608,12 @@ function zd_cfg_vervollstaendigen()
      * danach auf 0644 (gemessen 18.09.2026, Fall "dienst_erg": 644 statt
      * 600), obwohl zd_config_speichern() sie seit je auf 0600 haelt. */
     if (!zd_json_schreiben($p['config'], $datei, 0600)) {
-        return array(0, 0, 'Die Konfiguration liess sich nicht schreiben.');
+        return array(0, 0, zd_t('EINST.M_ERG_SCHREIBEN'));
     }
     zd_zweitschrift_ziehen($p['config'], $p['sicherung'], $datei,
                            array('aktionstoken'), 0600);
     return array(1, count($lage['fehlend']),
-                 'Ergaenzt: ' . implode(', ', $lage['fehlend']));
+                 sprintf(zd_t('EINST.M_ERG_ERGAENZT'), implode(', ', $lage['fehlend'])));
 }
 
 /**
@@ -633,6 +651,8 @@ function zd_config($erzeugen = true)
             @mkdir($p['configdir'], 0775, true);
             if (@copy($p['sicherung'], $p['config'])) {
                 @chmod($p['config'], 0600);
+                // Fuer die Pruefzeile "Ist die Konfiguration heil?" (U9).
+                $GLOBALS['zd_cfg_geheilt'] = 1;
                 zd_log_gebremst('heilung',
                     'Die Konfiguration trug kein Aktionstoken und wurde aus der Zweitschrift '
                     . 'wiederhergestellt: ' . $p['sicherung']
@@ -895,6 +915,48 @@ function zd_alter()
 {
     $l = zd_loxone();
     return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
+}
+
+/**
+ * Ab diesem Alter des Abbilds gilt kein Geraet mehr als frisch: dem
+ * Dreifachen des Abfragetakts (Entscheidung des Hausherrn 29.09.2026, Nr. 4).
+ */
+function zd_ok_grenze(array $cfg)
+{
+    return 3 * max(5, (int) (isset($cfg['intervall']) ? $cfg['intervall'] : 15));
+}
+
+/**
+ * Die Geraetewerte mit OK und ALTER zur LESEZEIT (Befund Code 2, 29.09.2026).
+ *
+ * Bis 0.9.27 standen ok und alter so im Abbild, wie der Dienst sie beim
+ * Schreiben rechnete. Starb der Dienst, meldete der Endpunkt unbegrenzt
+ * OK=1 und ALTER=0 mit den Werten von gestern (in WSL gemessen: Abbild
+ * 86400 s alt, status "OK=1 ... ALTER=0"). Jetzt:
+ *   ALTER = Alter beim Schreiben + Alter des Abbilds
+ *   OK    = 1 nur, wenn der Dienst es beim Schreiben so sah, das Abbild
+ *           nicht aelter als zd_ok_grenze() ist UND das ALTER innerhalb
+ *           der Frist des Dienstes liegt (max(120 s, 3 x Takt), dieselbe
+ *           Rechnung wie in zd_abbilden()).
+ */
+function zd_werte_jetzt(array $cfg)
+{
+    $l = zd_loxone();
+    $werte = isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+    $abbild = (isset($l['ts']) && (int) $l['ts'] > 0) ? max(0, time() - (int) $l['ts']) : -1;
+    $frisch = ($abbild >= 0 && $abbild <= zd_ok_grenze($cfg));
+    $frist = max(120, 3 * (int) (isset($cfg['intervall']) ? $cfg['intervall'] : 15));
+    foreach ($werte as $nr => $w) {
+        if (!is_array($w)) {
+            unset($werte[$nr]);
+            continue;
+        }
+        $a = isset($w['alter']) ? (int) $w['alter'] : -1;
+        $w['alter'] = ($a >= 0 && $abbild >= 0) ? $a + $abbild : -1;
+        $w['ok'] = (!empty($w['ok']) && $frisch && $w['alter'] >= 0 && $w['alter'] <= $frist) ? 1 : 0;
+        $werte[$nr] = $w;
+    }
+    return $werte;
 }
 
 /* Aus bin/zendure_dienst.php hierher gezogen: seit 0.9.10 braucht auch die
@@ -1552,6 +1614,34 @@ function zd_satztest_stand()
     return $p;
 }
 
+/**
+ * Eine HTTP-Anfrage ueber fopen() statt file_get_contents() (Befund Code 14,
+ * 29.09.2026).
+ *
+ * Bis 0.9.27 lasen zendure_dienst.php und zd_test.php den Statuscode aus der
+ * alten Kopfzeilen-Variable von PHP; 8.5 meldet sie beim Uebersetzen als
+ * ueberholt, PHP 9 soll sie abschaffen - dann hiesse jeder Code 0 und jede
+ * Absage des Geraets Erfolg. Die Kopfzeilen stehen in beiden Fassungen im
+ * wrapper_data des Datenstroms; Zeitschranke und ignore_errors wirken ueber
+ * denselben Kontext. Bauform eb_http_abruf() aus Einspeisebremse 0.9.28.
+ *
+ * Rueckgabe: array(Rumpf oder false, Kopfzeilen). false heisst: keine
+ * Verbindung; error_get_last() sagt dann warum.
+ */
+function zd_http_holen($url, $ctx)
+{
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) {
+        return array(false, array());
+    }
+    $meta = @stream_get_meta_data($fp);
+    $rumpf = @stream_get_contents($fp);
+    @fclose($fp);
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+          ? $meta['wrapper_data'] : array();
+    return array($rumpf === false ? '' : (string) $rumpf, $kopf);
+}
+
 /* ---------------- Protokollierung ---------------- */
 
 function zd_log($text)
@@ -1753,11 +1843,11 @@ function zd_bestand_sichern()
 function zd_dienst($befehl)
 {
     if (!in_array($befehl, array('start', 'stop', 'restart'), true)) {
-        return array(0, 'Unbekannter Befehl.');
+        return array(0, zd_t('EINST.M_DIENST_UNBEKANNT'));
     }
     $skript = zd_paths()['bindir'] . '/dienst.sh';
     if (!is_file($skript)) {
-        return array(0, 'dienst.sh nicht gefunden: ' . $skript);
+        return array(0, sprintf(zd_t('EINST.M_DIENSTSH_FEHLT'), $skript));
     }
     $ausgabe = array();
     $code = 0;
@@ -1848,7 +1938,7 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
-        return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
+        return array(0, sprintf(zd_t('TEST.M_WS_ORDNER'), $ordner));
     }
     $kennung = bin2hex(random_bytes(8));
     $datei = $ordner . '/' . $kennung . '.json';
@@ -1868,11 +1958,11 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
     }
     $zd_js = json_encode($befehl);
     if ($zd_js === false) {
-        return array(0, 'Der Befehl liess sich nicht als JSON darstellen (ungueltiges UTF-8).');
+        return array(0, zd_t('TEST.M_WS_JSON'));
     }
     if (@file_put_contents($tmp, $zd_js) !== strlen($zd_js) || !@rename($tmp, $datei)) {
         @unlink($tmp);
-        return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
+        return array(0, sprintf(zd_t('TEST.M_WS_ABLEGEN'), $datei));
     }
     $antwort = $p['datadir'] . '/antworten/' . $kennung . '.json';
     for ($i = 0; $i < $wartezeit * 10; $i++) {
@@ -1886,7 +1976,7 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
         }
         usleep(100000);
     }
-    return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
+    return array(2, sprintf(zd_t('TEST.M_WS_KEINE_ANTWORT'), $wartezeit));
 }
 
 /* ---------------- Konfiguration sichern und zurueckspielen ----------------
@@ -1921,28 +2011,285 @@ function zd_konfig_ausfuhr()
  */
 function zd_konfig_einfuhr($inhalt)
 {
+    /* JEDER Wert wird geprueft, mit den Regeln des Formulars (Befund U4/C3,
+     * 29.09.2026, Bauart E). Bis 0.9.27 wurde nur das Vorhandensein von
+     * geraete und aktionstoken geprueft und dann array_merge() gespeichert:
+     * Token als Liste (der Endpunkt nahm danach "token=Array"), Token "a",
+     * steuerung_ein=1, fremde Schluessel, Listen statt Zeichenketten - alles
+     * mit "zurueckgespielt" quittiert. Jetzt:
+     *   - ein fremder Schluessel oder ein unzulaessiger Wert: nichts geaendert
+     *   - ein fehlender Schluessel: der geltende Wert bleibt (auch das
+     *     Broker-Passwort)
+     *   - leeres Token: das geltende bleibt, und die Meldung sagt es
+     *     (Bauform Renault 2.1.13 U4)
+     *   - steuerung_ein wird nie still eingeschaltet
+     *   - Erfolg erst nach dem Zuruecklesen der Datei
+     * Die Rueckgabe ist HTML-sicher (Werte maskiert), Auszeichnung aus den
+     * Sprachdateien bleibt stehen (U6). */
     $d = json_decode((string) $inhalt, true);
     if (!is_array($d)) {
         return array(0, zd_t('EINST.KONFIG_KEIN_JSON'));
     }
     $neu = isset($d['konfiguration']) && is_array($d['konfiguration']) ? $d['konfiguration'] : $d;
-    // Ein Merkmal, an dem sich eine Zendure-Sicherung erkennen laesst. Ohne
-    // das liesse sich jede beliebige JSON-Datei einspielen.
-    if (!array_key_exists('geraete', $neu) || !array_key_exists('aktionstoken', $neu)) {
-        return array(0, zd_t('EINST.KONFIG_FREMD'));
+    // Ein Merkmal, an dem sich eine Zendure-Sicherung erkennen laesst. Die
+    // Meldung nennt nur, was wirklich fehlt (U6).
+    $fehlt = array();
+    foreach (array('geraete', 'aktionstoken') as $k) {
+        if (!array_key_exists($k, $neu)) {
+            $fehlt[] = "<span class='sm-mono'>" . $k . '</span>';
+        }
     }
-    if (!is_array($neu['geraete'])) {
-        return array(0, zd_t('EINST.KONFIG_FREMD'));
+    if ($fehlt) {
+        return array(0, sprintf(zd_t('EINST.KONFIG_FREMD'), implode(', ', $fehlt)));
     }
-    // Vervollstaendigen, nicht ergaenzen: was die Sicherung nicht kennt,
-    // wird mit der Vorgabe HINEINGESCHRIEBEN. Sonst bliebe die Datei
-    // lueckenhaft, und "fehlt" waere von "steht auf der Vorgabe" nicht mehr
-    // zu unterscheiden.
-    $voll = array_merge(zd_vorgaben(), $neu);
-    if (!zd_config_speichern($voll)) {
-        return array(0, sprintf(zd_t('EINST.FEHLER_SPEICHERN'), zd_paths()['config']));
+    $vorgaben = zd_vorgaben();
+    $bean = array();
+    $gut = array();
+    foreach ($neu as $k => $v) {
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_') {
+            continue;       // lesbarer Kopf der eigenen Sicherung
+        }
+        if (!array_key_exists($k, $vorgaben)) {
+            $bean[] = sprintf(zd_t('EINST.SICH_FREMD'), zd_e($k));
+            continue;
+        }
+        $grund = zd_sicherung_wert_pruefen($k, $v);
+        if ($grund !== '') {
+            $bean[] = sprintf(zd_t('EINST.SICH_WERT'), zd_e($k), $grund);
+            continue;
+        }
+        $gut[$k] = $v;
     }
-    return array(1, sprintf(zd_t('EINST.KONFIG_ZURUECK'), count($voll['geraete'])));
+    $alt = zd_config();
+    $cfg = $alt;
+    foreach ($gut as $k => $v) {
+        $cfg[$k] = $v;
+    }
+    if ((int) $cfg['schutz_soc_min'] >= (int) $cfg['schutz_soc_max']) {
+        $bean[] = zd_t('EINST.FEHLER_SOC_REIHE');
+    }
+    if ($bean) {
+        return array(0, zd_t('EINST.SICH_ABGEWIESEN') . '<br>' . implode('<br>', $bean));
+    }
+    $hinweise = array();
+    if (!isset($gut['aktionstoken']) || $gut['aktionstoken'] === '') {
+        $cfg['aktionstoken'] = $alt['aktionstoken'];
+        $hinweise[] = zd_t('EINST.SICH_TOKEN_BEHALTEN');
+    }
+    if (!empty($gut['steuerung_ein']) && empty($alt['steuerung_ein'])) {
+        $cfg['steuerung_ein'] = 0;
+        $hinweise[] = zd_t('EINST.SICH_STEUERUNG_AUS');
+    }
+    if (!zd_config_speichern($cfg)) {
+        return array(0, sprintf(zd_t('EINST.FEHLER_SPEICHERN'), zd_e(zd_paths()['config'])));
+    }
+    clearstatcache(true, zd_paths()['config']);
+    $zurueck = zd_json_lesen(zd_paths()['config']);
+    foreach ($cfg as $k => $v) {
+        if (!array_key_exists($k, $zurueck) || json_encode($zurueck[$k]) !== json_encode($v)) {
+            return array(0, sprintf(zd_t('EINST.SICH_NICHT_WIRKSAM'), zd_e($k)));
+        }
+    }
+    return array(1, sprintf(zd_t('EINST.KONFIG_ZURUECK'), count((array) $cfg['geraete']))
+                  . ($hinweise ? ' ' . implode(' ', $hinweise) : ''));
+}
+
+/** Zahlenfelder des Reiters Einstellungen: Feld => array(von, bis). EINE Tabelle fuer Formular und Sicherung. */
+function zd_grenzen()
+{
+    return array(
+        'intervall'     => array(5, 900),
+        'schreibbremse' => array(0, 600),
+        'schrittweite'  => array(1, 500),
+        'verlauf_tage'  => array(1, 90),
+        'wartezeit'     => array(0, 20),
+        'quittung_nachlauf' => array(0, 900),
+        'totband_w'            => array(0, 5000),
+        'totband_auffrischung' => array(0, 86400),
+        'rueckfall_min'     => array(0, 1440),
+        'befehl_verfall_s'  => array(0, 86400),
+        'schutz_soc_min'    => array(0, 100),
+        'schutz_soc_max'    => array(0, 100),
+        'energie_monate'    => array(1, 120),
+    );
+}
+
+/** Das Themenpraefix: nicht leer, hoechstens 64 Zeichen, kein / am Rand, kein //, keine Platzhalter (U12). */
+function zd_topic_gueltig($s)
+{
+    return is_string($s) && strlen($s) <= 64
+        && (bool) preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z#', $s);
+}
+
+/** Das Aktionstoken in der Form, die zd_token_erzeugen() bildet (U4). */
+function zd_token_gueltig($t)
+{
+    return is_string($t) && (bool) preg_match('/^[a-km-np-z2-9]{24}\z/', $t);
+}
+
+/** Ein Wert aus einer Sicherung. Rueckgabe: '' (in Ordnung) oder der Grund (HTML-sicher). */
+function zd_sicherung_wert_pruefen($k, $v)
+{
+    $g = zd_grenzen();
+    $g['broker_port'] = array(1, 65535);
+    /* Die Sicherung nimmt bis 86400 an, obwohl das Formular seit 0.9.28 bei
+     * 3600 endet (M8): sonst liesse sich eine eigene Sicherung einer
+     * Vorfassung nicht mehr zurueckspielen. Der Dienst deckelt auf 3600. */
+    $g['mqtt_auffrischung'] = array(0, 86400);
+    if (isset($g[$k])) {
+        if (!is_int($v) || $v < $g[$k][0] || $v > $g[$k][1]) {
+            return sprintf(zd_t('EINST.SICH_ZAHL'), $g[$k][0], $g[$k][1]);
+        }
+        return '';
+    }
+    if (in_array($k, array('mqtt_ein', 'steuerung_ein', 'schutz_ein', 'energie_ein'), true)) {
+        return ($v === 0 || $v === 1) ? '' : zd_t('EINST.SICH_SCHALTER');
+    }
+    $text = function ($x, $max) {
+        return is_string($x) && strlen($x) <= $max && !preg_match('/[\x00-\x1F\x7F]/', $x);
+    };
+    switch ($k) {
+        case 'mqtt_topic':
+            return zd_topic_gueltig($v) ? '' : zd_t('EINST.FEHLER_TOPIC');
+        case 'broker_host':
+            return (is_string($v) && ($v === '' || preg_match('/^[A-Za-z0-9][A-Za-z0-9.\-]{0,80}\z/', $v)))
+                ? '' : zd_t('EINST.FEHLER_BROKER');
+        case 'broker_user':
+            return ($text($v, 128) && strpbrk($v, '"\'') === false) ? '' : zd_t('EINST.SICH_TEXT');
+        case 'broker_pw':
+            return $text($v, 256) ? '' : zd_t('EINST.SICH_TEXT');
+        case 'aktionstoken':
+            return (is_string($v) && ($v === '' || zd_token_gueltig($v))) ? '' : zd_t('EINST.SICH_TOKEN');
+        case 'temp_umrechnung':
+            return in_array($v, array('roh', 'kelvin10', 'zehntel'), true) ? '' : zd_t('EINST.SICH_AUSWAHL');
+        case 'schutz_temp_min':
+        case 'schutz_temp_max':
+            return ((is_int($v) || is_float($v)) && abs($v) <= 999999) ? '' : zd_t('EINST.SICH_ZAHL_FREI');
+        case 'zuordnung':
+        case 'packzuordnung':
+            if (!is_array($v)) {
+                return zd_t('EINST.SICH_ZUORDNUNG');
+            }
+            $karte = $k === 'zuordnung' ? zd_feldkarte() : zd_packkarte();
+            foreach ($v as $fk => $fw) {
+                if (!isset($karte[$fk]) || !is_string($fw) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}\z/', $fw)) {
+                    return zd_t('EINST.SICH_ZUORDNUNG');
+                }
+            }
+            return '';
+        case 'geraete':
+            if (!is_array($v) || count($v) > 6 || ($v && array_keys($v) !== range(0, count($v) - 1))) {
+                return zd_t('EINST.SICH_GERAETE');
+            }
+            foreach ($v as $i => $z) {
+                $f = zd_geraet_zeile_pruefen($z);
+                if ($f !== '') {
+                    return sprintf(zd_t('EINST.SICH_GERAET_ZEILE'), $i + 1, $f);
+                }
+            }
+            return '';
+    }
+    return zd_t('EINST.SICH_UNBEKANNT');
+}
+
+/** Eine Geraetezeile aus einer Sicherung, mit den Regeln des Formulars. Rueckgabe '' oder Grund. */
+function zd_geraet_zeile_pruefen($z)
+{
+    if (!is_array($z)) {
+        return zd_t('EINST.SICH_GERAETE');
+    }
+    $erlaubt = array('name', 'art', 'ip', 'prodkey', 'deviceid', 'sn', 'modell', 'satz',
+                     'quittungsfeld', 'kapazitaet_wh', 'max_laden', 'max_entladen');
+    foreach ($z as $k => $w) {
+        if (!in_array((string) $k, $erlaubt, true)) {
+            return sprintf(zd_t('EINST.SICH_FREMD'), zd_e($k));
+        }
+        if (in_array($k, array('kapazitaet_wh', 'max_laden', 'max_entladen'), true)) {
+            $max = $k === 'kapazitaet_wh' ? 999000 : 5000;
+            if (!is_int($w) || $w < 0 || $w > $max) {
+                return zd_e($k) . ': ' . sprintf(zd_t('EINST.SICH_ZAHL'), 0, $max);
+            }
+        } elseif (!is_string($w) || preg_match('/[\x00-\x1F\x7F]/', $w) || strlen($w) > 128) {
+            return zd_e($k) . ': ' . zd_t('EINST.SICH_TEXT');
+        }
+    }
+    $s = function ($k) use ($z) { return isset($z[$k]) ? $z[$k] : ''; };
+    $art = $s('art') === '' ? 'http' : $s('art');
+    if (!in_array($art, array('http', 'mqtt'), true)) {
+        return 'art: ' . zd_t('EINST.SICH_AUSWAHL');
+    }
+    if (preg_match('/[;="\']/', $s('name'))) {
+        return 'name: ' . zd_t('EINST.SICH_TEXT');
+    }
+    if ($art === 'http' && !preg_match('/^\d{1,3}(\.\d{1,3}){3}\z/', $s('ip'))
+        && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{1,80}\z/', $s('ip'))) {
+        return 'ip: ' . zd_t('EINST.SICH_TEXT');
+    }
+    foreach (array('prodkey', 'deviceid') as $k) {
+        if (($art === 'mqtt' || $s($k) !== '') && !preg_match('/^[A-Za-z0-9_\-]{1,64}\z/', $s($k))) {
+            return $k . ': ' . zd_t('EINST.SICH_TEXT');
+        }
+    }
+    if ($s('satz') !== '' && !in_array($s('satz'), zd_befehlssaetze(), true)) {
+        return 'satz: ' . zd_t('EINST.SICH_AUSWAHL');
+    }
+    if (!preg_match('/^[a-z0-9]{0,40}\z/', $s('modell'))) {
+        return 'modell: ' . zd_t('EINST.SICH_TEXT');
+    }
+    if ($s('quittungsfeld') !== '' && !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}\z/', $s('quittungsfeld'))) {
+        return 'quittungsfeld: ' . zd_t('EINST.SICH_TEXT');
+    }
+    return '';
+}
+
+/* ---------------- Einmalmeldung nach dem POST (U1) ----------------
+ *
+ * Jeder POST endet mit 303 (Regeln/04). Was die Seite danach zeigen soll,
+ * reist in dieser Datei: im Datenordner, 0600, beim naechsten GET gelesen
+ * und geloescht, aelter als 120 s verworfen. Aktionstoken und
+ * Broker-Passwort werden vorher unkenntlich gemacht (Regeln/04, Nachtrag
+ * Raumklima 17.09.). Bauform ak_einmal_*() aus AnkerSolix 0.9.22. */
+function zd_einmal_schreiben(array $meldungen, array $fehler, $test)
+{
+    $cfg = zd_config(false);
+    $geheim = array();
+    foreach (array($cfg['aktionstoken'], $cfg['broker_pw']) as $g) {
+        if (is_string($g) && strlen($g) >= 4) {
+            $geheim[] = $g;
+            $geheim[] = zd_e($g);
+        }
+    }
+    $weg = function ($t) use ($geheim) {
+        return $geheim ? str_replace($geheim, '***', (string) $t) : (string) $t;
+    };
+    return zd_json_schreiben(zd_paths()['datadir'] . '/einmalmeldung.json', array(
+        'zeit'      => time(),
+        'meldungen' => array_map($weg, array_values($meldungen)),
+        'fehler'    => array_map($weg, array_values($fehler)),
+        'test'      => $weg($test),
+    ), 0600);
+}
+
+function zd_einmal_lesen()
+{
+    $f = zd_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    $liste = function ($x) {
+        return is_array($x) ? array_values(array_map('strval', array_filter($x, 'is_scalar'))) : array();
+    };
+    return array(
+        'meldungen' => $liste(isset($d['meldungen']) ? $d['meldungen'] : null),
+        'fehler'    => $liste(isset($d['fehler']) ? $d['fehler'] : null),
+        'test'      => isset($d['test']) && is_scalar($d['test']) ? (string) $d['test'] : '',
+    );
 }
 
 /**
@@ -2283,8 +2630,10 @@ function zd_mqtt_zustand()
  *
  *   Zustand   soc, soc_min, soc_max, grenze_ein, grenze_aus, acmodus,
  *             soll, sollok, packs, geraete, kapaz, restkwh,
- *             alle Energiezaehler (Tag, Monat, Jahr, gesamt, Wirkungsgrad,
- *             Zyklen) - ein Zaehlerstand ist der Stand, nicht die Messung
+ *             Energiezaehler gesamt, Wirkungsgrad, Zyklen - ein
+ *             Zaehlerstand ist der Stand, nicht die Messung
+ *   Zeitwert  energie/heute|monat|jahr - seit 0.9.28 NICHT mehr retained,
+ *             siehe zd_mqtt_zeitwert()
  *   Dienst    ok, geraetN/online - seit 0.9.26 NICHT mehr retained, siehe
  *             zd_mqtt_dienstaussage()
  *   Messwert  pv, haus, netz, batp, laden, entladen, temp, dvolt, volt,
@@ -2307,11 +2656,12 @@ function zd_mqtt_retain($thema)
     $t = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $thema);
     $t = preg_replace('#^geraetN/pack/[^/]+/#', 'geraetN/pack/<SN>/', $t);
 
-    /* Die Feldnamen unter heute/monat/jahr kommen aus der Zaehlerrechnung
-       und stehen nicht fest; Zaehlerstaende sind samt und sonders
-       Zustaende. */
-    if (preg_match('#^geraetN/energie/(heute|monat|jahr)/#', $t)) {
-        return true;
+    /* Tages-, Monats- und Jahreswerte werden allein durch die Uhr falsch
+       und gehen deshalb fluechtig hinaus (Entscheidung 3, Befund M2,
+       29.09.2026). Bis 0.9.27 retained: starb der Dienst vor Mitternacht,
+       lieferte der Broker nach einem Neustart den gestrigen "heute"-Wert. */
+    if (zd_mqtt_zeitwert($t)) {
+        return false;
     }
 
     static $tab = null;
@@ -2357,10 +2707,259 @@ function zd_mqtt_dienstaussage($thema)
     return $t === 'ok' || $t === 'geraetN/online';
 }
 
+/**
+ * Ein Wert mit Zeitbezug: energie/heute|monat|jahr/<feld>. Bis 0.9.27
+ * retained, seit 0.9.28 fluechtig (Befund M2); der Altwert wird wie bei den
+ * Dienstaussagen einmal abgeraeumt (zd_mqtt_altlast_pruefen()).
+ */
+function zd_mqtt_zeitwert($thema)
+{
+    $t = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $thema);
+    return (bool) preg_match('#^geraetN/energie/(heute|monat|jahr)/#', $t);
+}
+
+/** Das Befehlswort fuer das Gateway V1 - EINE Stelle fuer Senden und Pruefzeile (M10). */
+function zd_mqtt_befehlswort($thema)
+{
+    return zd_mqtt_retain($thema) ? 'retain' : 'publish';
+}
+
 /** Ging dieses Thema in irgendeiner veroeffentlichten Fassung retained hinaus? */
 function zd_mqtt_je_retained($thema)
 {
-    return zd_mqtt_retain($thema) || zd_mqtt_dienstaussage($thema);
+    return zd_mqtt_retain($thema) || zd_mqtt_dienstaussage($thema) || zd_mqtt_zeitwert($thema);
+}
+
+/* ---------------- Liste der retained gesendeten Themen (Befund M4) ----------------
+ *
+ * Bis 0.9.27 blieben die Themen eines entfernten Geraets (geraet2/* nach dem
+ * Herausnehmen von Geraet 1: 26 Themen) und eines getauschten Akkupacks
+ * (pack/<alteSN>/soc) fuer immer im Broker, auch nach der Deinstallation.
+ * Jetzt fuehrt zd_mqtt_senden() jedes retained gesendete Thema (mit Praefix)
+ * in dieser Liste. Sie liegt im Bestandsordner und uebersteht ein Update;
+ * der Dienst raeumt ab, was nicht mehr entsteht, die Deinstallation liest
+ * dieselbe Liste. */
+function zd_mqtt_liste_datei()
+{
+    return zd_paths()['bestand'] . '/mqtt_retained.json';
+}
+
+function zd_mqtt_liste_doc()
+{
+    $d = zd_json_lesen(zd_mqtt_liste_datei());
+    $t = isset($d['themen']) && is_array($d['themen']) ? $d['themen'] : array();
+    return array('themen' => array_values(array_filter($t, 'is_string')),
+                 'versuch' => isset($d['versuch']) ? (int) $d['versuch'] : 0);
+}
+
+function zd_mqtt_liste_lesen()
+{
+    return zd_mqtt_liste_doc()['themen'];
+}
+
+function zd_mqtt_liste_merken(array $themen)
+{
+    $d = zd_mqtt_liste_doc();
+    $neu = array_values(array_unique(array_merge($d['themen'], $themen)));
+    sort($neu);
+    $alt = $d['themen'];
+    sort($alt);
+    if ($neu !== $alt) {
+        $d['themen'] = $neu;
+        zd_json_schreiben(zd_mqtt_liste_datei(), $d);
+    }
+}
+
+/** Welche retained Themen kann die jetzige Einrichtung ueberhaupt erzeugen? */
+function zd_mqtt_soll_retained(array $werte, $praefix)
+{
+    $soll = array();
+    foreach (array_keys(zd_mqtt_themen()) as $st) {
+        if (strpos($st, '<') !== false || !zd_mqtt_retain($st)) {
+            continue;
+        }
+        if (strncmp($st, 'geraetN/', 8) === 0) {
+            foreach (array_keys($werte) as $nr) {
+                $soll[$praefix . '/geraet' . (int) $nr . '/' . substr($st, 8)] = true;
+            }
+        } else {
+            $soll[$praefix . '/' . $st] = true;
+        }
+    }
+    foreach ($werte as $nr => $w) {
+        $pl = (is_array($w) && isset($w['packliste']) && is_array($w['packliste'])) ? $w['packliste'] : array();
+        foreach (array_keys($pl) as $sn) {
+            $soll[$praefix . '/geraet' . (int) $nr . '/pack/' . zd_mqtt_thema_teil($sn) . '/soc'] = true;
+        }
+    }
+    return $soll;
+}
+
+/**
+ * Themen der Liste, die nicht mehr entstehen, abraeumen und nachlesen.
+ *
+ * Leere retain-Nutzlast ueber den UDP-Eingang (dieselbe Form wie
+ * zd_mqtt_leeren()), 5 ms zwischen den Datagrammen, danach den Broker
+ * fragen. Aus der Liste faellt nur, was der Broker als fort bestaetigt; ist
+ * er nicht zu fragen, bleibt die Liste stehen. Hoechstens ein Versuch je
+ * 300 s. Rueckgabe: Zahl der bestaetigt abgeraeumten Themen.
+ */
+function zd_mqtt_verwaiste_raeumen(array $soll)
+{
+    $d = zd_mqtt_liste_doc();
+    $weg = array();
+    foreach ($d['themen'] as $t) {
+        if (!isset($soll[$t])) {
+            $weg[] = $t;
+        }
+    }
+    if (!$weg || time() - $d['versuch'] < 300) {
+        return 0;
+    }
+    $z = zd_mqtt_zustand();
+    if (!$z['udpport']) {
+        return 0;
+    }
+    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+    if (!$s) {
+        return 0;
+    }
+    foreach ($weg as $i => $t) {
+        if ($i > 0) {
+            usleep(5000);
+        }
+        $m = 'retain ' . $t . ' ';
+        @socket_sendto($s, $m, strlen($m), 0, '127.0.0.1', $z['udpport']);
+    }
+    socket_close($s);
+    usleep(300000);
+    $f = zd_mqtt_behalten_fragen($weg);
+    $d['versuch'] = time();
+    $fort = 0;
+    if ($f['lage'] === 'ok') {
+        $geraeumt = array_values(array_diff($weg, array_keys($f['belegt'])));
+        $fort = count($geraeumt);
+        $d['themen'] = array_values(array_diff($d['themen'], $geraeumt));
+        zd_log('MQTT: ' . $fort . ' zurueckbehaltene Themen, die nicht mehr entstehen (entferntes '
+            . 'Geraet, getauschter Akkupack, anderes Praefix), abgeraeumt - vom Broker bestaetigt'
+            . ($f['belegt'] ? '; noch belegt: ' . implode(', ', array_slice(array_keys($f['belegt']), 0, 5)) : '')
+            . '.');
+    } else {
+        zd_log_gebremst('mqtt_verwaist', 'MQTT: ' . count($weg) . ' Themen, die nicht mehr entstehen, '
+            . 'mit leerer Nutzlast gesendet - der Broker liess sich nicht befragen, die Liste bleibt '
+            . 'stehen, neuer Versuch in 300 s.');
+    }
+    zd_json_schreiben(zd_mqtt_liste_datei(), $d);
+    return $fort;
+}
+
+/**
+ * Das Lebenszeichen (Befund M1, 29.09.2026; Regeln/07 Abschnitt 3): ts und
+ * zaehler gehen in jedem Durchgang am Aenderungsfilter vorbei hinaus,
+ * publish, hoechstens alle 30 s. Bis 0.9.27 gab es ueber MQTT keines - nachts
+ * war ein toter Dienst von einem lebenden nicht zu unterscheiden.
+ */
+function zd_mqtt_lebenszeichen($ts, $zaehler)
+{
+    return array('status/ts' => (int) $ts, 'status/zaehler' => (int) $zaehler);
+}
+
+/**
+ * Die Paare eines Durchgangs (seit 0.9.28 hier statt im Dienst, damit der
+ * Reiter Test dieselbe Funktion gegen die Themenliste halten kann - M10).
+ *
+ * M7: Ein Geraet, das nicht ok ist, meldet nur online (Regeln/07 "bei einer
+ * Stoerung nur das Signal"). Bis 0.9.27 gingen die Messwerte des letzten
+ * Kontakts bei jeder Auffrischung neu hinaus (gemessen: pv 800, haus 300
+ * neben online 0). Soll, Quittung und die Energiezaehler rechnet das Plugin
+ * selbst; sie gehen weiter.
+ *
+ * M3: Summenthemen, die frueher gesendet wurden, bekommen bei nur noch einem
+ * Geraet "keine Aussage" (null, in zd_mqtt_senden() zu "-").
+ */
+function zd_mqtt_paare(array $werte, array $geraete, array $cfg, $ok, $praefix)
+{
+    $paare = array('ok' => (int) $ok, 'geraete' => count($werte));
+    foreach ($werte as $nr => $w) {
+        if (!empty($w['ok'])) {
+            foreach (array('soc', 'pv', 'haus', 'netz', 'batp', 'laden', 'entladen',
+                           'grenze_aus', 'grenze_ein', 'soc_min', 'soc_max', 'acmodus',
+                           'packs', 'dvolt', 'temp') as $feld) {
+                $paare['geraet' . $nr . '/' . $feld] = isset($w[$feld]) ? $w[$feld] : null;
+            }
+        }
+        $paare['geraet' . $nr . '/soll'] = isset($w['soll']) ? $w['soll'] : null;
+        $paare['geraet' . $nr . '/online'] = !empty($w['ok']) ? 1 : 0;
+        // null heisst "keine Aussage"; fuer einen Zustand wird daraus "-".
+        $paare['geraet' . $nr . '/sollok'] = isset($w['sollok']) ? $w['sollok'] : null;
+        if (!empty($w['ok'])) {
+            $paare['geraet' . $nr . '/ms'] = isset($w['ms']) ? $w['ms'] : null;
+        }
+        // Energie in kWh: was Loxone und der Energiefluss-Monitor wollen.
+        if (!empty($cfg['energie_ein'])) {
+            foreach (array('tag' => 'heute', 'monat' => 'monat', 'jahr' => 'jahr') as $zr => $name) {
+                foreach (zd_energie_summe($nr, $zr) as $ef => $wh) {
+                    $paare['geraet' . $nr . '/energie/' . $name . '/' . $ef] = round($wh / 1000, 3);
+                }
+            }
+            $kz = zd_energie_kennzahlen($nr, isset($geraete[(int) $nr]) ? $geraete[(int) $nr] : array());
+            $paare['geraet' . $nr . '/energie/gesamt/laden'] = round($kz['geladen_wh'] / 1000, 3);
+            $paare['geraet' . $nr . '/energie/gesamt/entladen'] = round($kz['entladen_wh'] / 1000, 3);
+            $paare['geraet' . $nr . '/energie/wirkungsgrad'] = $kz['wirkungsgrad'];
+            $paare['geraet' . $nr . '/energie/zyklen'] = $kz['zyklen'];
+        }
+        if (!empty($w['ok']) && isset($w['packliste']) && is_array($w['packliste'])) {
+            foreach ($w['packliste'] as $sn => $pk) {
+                /* Die Seriennummer kommt aus packData[].sn, also vom Geraet -
+                 * zd_mqtt_thema_teil() saeubert sie (gemessen an 0.9.8). */
+                $skenn = zd_mqtt_thema_teil($sn);
+                foreach (array('soc', 'volt', 'dvolt', 'temp', 'watt') as $feld) {
+                    $paare['geraet' . $nr . '/pack/' . $skenn . '/' . $feld] = isset($pk[$feld]) ? $pk[$feld] : null;
+                }
+            }
+        }
+    }
+    // Summe ueber alle Geraete - nur, wenn es mehr als eines gibt.
+    if (count($werte) > 1) {
+        foreach (zd_summe($werte, $geraete) as $sf => $sv) {
+            if ($sf !== 'ok' && $sf !== 'n' && $sf !== 'nok') {
+                $paare['summe/' . $sf] = $sv;
+            }
+        }
+    } else {
+        $liste = zd_mqtt_liste_lesen();
+        foreach (array('soc', 'kapaz', 'restkwh') as $sf) {
+            if (in_array($praefix . '/summe/' . $sf, $liste, true)) {
+                $paare['summe/' . $sf] = null;
+            }
+        }
+    }
+    return $paare;
+}
+
+/**
+ * Die Abo-Datei des MQTT-Gateways (Befund M9, 29.09.2026; Regeln/07 seit
+ * 17.09.2026): config/plugins/<ordner>/mqtt_subscriptions.cfg mit
+ * "<praefix>/#". Das Gateway V1 liest sie selbst (am Geraet belegt an
+ * Midea2Lox). Geschrieben nur, wenn sie abweicht, mit Protokollzeile.
+ * Bauform eb_abo_datei() aus Einspeisebremse 0.9.28. Rueckgabe:
+ * array(Pfad, traegt das Abo).
+ */
+function zd_abo_datei($praefix, $schreiben = false)
+{
+    $p = zd_paths();
+    $pfad = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $soll = trim((string) $praefix, '/') . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $roh !== $soll . "\n" && is_dir($p['configdir'])) {
+        if (@file_put_contents($pfad, $soll . "\n") === strlen($soll) + 1) {
+            @chmod($pfad, 0644);
+            zd_log('Gateway-Abo gesetzt: ' . $soll . ' (' . $pfad . ').');
+            $da = true;
+        }
+    }
+    return array($pfad, $da);
 }
 
 /**
@@ -2541,7 +3140,10 @@ function zd_mqtt_behalten_fragen(array $themen)
 function zd_mqtt_altlast_pruefen($praefix, array $themen)
 {
     $datei = zd_paths()['datadir'] . '/.mqtt_dienstaussage_geraeumt';
-    $kennung = 'leer-bestaetigt ';
+    /* Neue Kennung seit 0.9.28 (Befund M2): die Tages-, Monats- und
+     * Jahreswerte kamen dazu, und kein Merker einer Vorfassung darf als
+     * erledigt gelten. */
+    $kennung = 'leer-bestaetigt-v2 ';
     $zeilen = is_file($datei) ? preg_split('/\r?\n/', (string) @file_get_contents($datei)) : array();
     $bestaetigt = array_flip(array_map('trim', $zeilen));
     $offen = array();
@@ -2587,7 +3189,8 @@ function zd_mqtt_altlast_pruefen($praefix, array $themen)
             zd_log('MQTT: vom Broker bestaetigt, kein zurueckbehaltener Altwert mehr unter '
                 . implode(', ', array_map(function ($z) use ($kennung) {
                     return substr($z, strlen($kennung));
-                }, $neu)) . '. Diese Themen gehen seit 0.9.26 fluechtig hinaus.');
+                }, $neu)) . '. Diese Themen gehen fluechtig hinaus (ok/online seit 0.9.26, '
+                . 'Tages-, Monats- und Jahreswerte seit 0.9.28).');
         }
     }
     return $raeumen;
@@ -2603,7 +3206,7 @@ function zd_mqtt_altlast_pruefen($praefix, array $themen)
  * seit dem letzten Update hinausging). Seriennummern der Akkupacks aus dem
  * Abbild, Energiefelder aus zd_energiefelder().
  */
-function zd_mqtt_leer_themen()
+function zd_mqtt_leer_themen($praefix = null)
 {
     $p = zd_paths();
     $cfg = zd_config(false);
@@ -2668,6 +3271,18 @@ function zd_mqtt_leer_themen()
             }
         }
     }
+    /* Dazu jedes Thema der Liste retained gesendeter Themen unter diesem
+     * Praefix (Befund M4): bis 0.9.27 fehlten hier die Themen entfernter
+     * Geraete und getauschter Akkupacks, und die Ausgabe "Broker bestaetigt"
+     * stimmte nur fuer die Teilmenge. */
+    if ($praefix !== null && $praefix !== '') {
+        $vor = $praefix . '/';
+        foreach (zd_mqtt_liste_lesen() as $voll) {
+            if (strncmp($voll, $vor, strlen($vor)) === 0 && strlen($voll) > strlen($vor)) {
+                $themen[substr($voll, strlen($vor))] = true;
+            }
+        }
+    }
     ksort($themen);
     return array_keys($themen);
 }
@@ -2687,10 +3302,15 @@ function zd_mqtt_leer_themen()
  * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
  * Senden gescheitert, 2 nicht moeglich.
  */
-function zd_mqtt_leeren($runden = 3, $pause = 1.0)
+function zd_mqtt_leeren($runden = 3, $pause = 1.0, $praefix = null)
 {
     $cfg = zd_config(false);
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    /* $praefix: seit 0.9.28 fuer das Speichern im Reiter MQTT (alter Praefix
+     * beim Wechsel, Abschalten; Befunde M5/M6). Ohne Angabe der eingestellte. */
+    if ($praefix === null) {
+        $praefix = (string) $cfg['mqtt_topic'];
+    }
+    $praefix = trim((string) $praefix, '/');
     if ($praefix === '') {
         $praefix = 'zendure';
     }
@@ -2706,7 +3326,7 @@ function zd_mqtt_leeren($runden = 3, $pause = 1.0)
         return 2;
     }
     $offen = array();
-    foreach (zd_mqtt_leer_themen() as $t) {
+    foreach (zd_mqtt_leer_themen($praefix) as $t) {
         $offen[] = $praefix . '/' . $t;
     }
     $n = count($offen);
@@ -2722,7 +3342,11 @@ function zd_mqtt_leeren($runden = 3, $pause = 1.0)
         if ($r > 1) {
             usleep((int) ($pause * 1000000));
         }
-        foreach ($offen as $t) {
+        foreach ($offen as $zd_i => $t) {
+            // 5 ms zwischen den Datagrammen (Befund M8).
+            if ($zd_i > 0) {
+                usleep(5000);
+            }
             // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
             // Form, die das Gateway als Loeschung liest.
             @fwrite($strom, 'retain ' . $t . ' ');
@@ -2781,7 +3405,7 @@ function zd_mqtt_senden(array $paare, $praefix)
      * fort ist (zd_mqtt_altlast_pruefen()). */
     $zd_kand = array();
     foreach ($paare as $k => $v) {
-        if (zd_mqtt_dienstaussage($k) && $v !== null && $v !== ''
+        if ((zd_mqtt_dienstaussage($k) || zd_mqtt_zeitwert($k)) && $v !== null && $v !== ''
             && zd_mqtt_wert_saeubern($v) !== '') {
             $zd_kand[] = (string) $k;
         }
@@ -2792,9 +3416,19 @@ function zd_mqtt_senden(array $paare, $praefix)
         zd_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
         return false;
     }
+    $zd_n = 0;
+    $zd_ret = array();
     foreach ($paare as $k => $v) {
+        /* Ein retained Zustand ohne Aussage geht als "-" retained hinaus -
+         * nie als leere Nutzlast und nie als stehenbleibender Altwert
+         * (Entscheidung 5 vom 29.09.2026, Befund M3). Bis 0.9.27 wurde null
+         * ausgelassen: nach dem Rueckfall standen soll=600 und sollok=1 fuer
+         * immer im Broker, summe/soc blieb bei schweigendem Geraet auf 55. */
+        if (zd_mqtt_retain($k) && ($v === null || zd_mqtt_wert_saeubern($v) === '')) {
+            $v = '-';
+        }
         if ($v === null || $v === '') {
-            continue;   // fehlender Wert: nichts senden statt eine erfundene 0
+            continue;   // fehlender Messwert: nichts senden statt eine erfundene 0
         }
         /* GESAEUBERT wird vor der Frage "ist er leer?", nicht danach. Ein
            Wert aus lauter Leerzeichen faellt oben nicht durch ($v !== ''),
@@ -2817,15 +3451,30 @@ function zd_mqtt_senden(array $paare, $praefix)
            Nachricht, und der naechste Wert steht gleich dahinter. Das ist die
            eine gewollte leere Nutzlast; sonst laesst diese Funktion keine
            durch. */
+        /* 5 ms zwischen zwei Datagrammen (Befund M8, 29.09.2026): am Geraet
+           kamen 90 Datagramme ohne Pause zu 0, 0 und 6 an (Regeln/07,
+           Octopus-Eichung 13.09.); bis 0.9.27 gingen 98 in 19 ms hinaus. */
         if (isset($raeumen[$k])) {
+            if ($zd_n++ > 0) {
+                usleep(5000);
+            }
             $leer = 'retain ' . $praefix . '/' . $k . ' ';
             @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $z['udpport']);
         }
-        $befehl = zd_mqtt_retain($k) ? 'retain' : 'publish';
+        if ($zd_n++ > 0) {
+            usleep(5000);
+        }
+        $befehl = zd_mqtt_befehlswort($k);
         $msg = $befehl . ' ' . $praefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
+        if ($befehl === 'retain') {
+            $zd_ret[] = $praefix . '/' . $k;
+        }
     }
     socket_close($s);
+    if ($zd_ret) {
+        zd_mqtt_liste_merken($zd_ret);
+    }
     return true;
 }
 
@@ -2849,12 +3498,17 @@ function zd_mqtt_senden(array $paare, $praefix)
  */
 function zd_mqtt_senden_bei_aenderung(array $paare, $praefix, array $cfg)
 {
-    $auffr = max(0, min(86400, (int) (isset($cfg['mqtt_auffrischung'])
-                                      ? $cfg['mqtt_auffrischung'] : 300)));
+    /* Hoechstens 3600 s (Befund M8): ein verlorener retained Zustand wird erst
+     * bei der naechsten Auffrischung nachgeholt - bis 0.9.27 bis zu einem Tag. */
+    $auffr = max(0, min(3600, (int) (isset($cfg['mqtt_auffrischung'])
+                                     ? $cfg['mqtt_auffrischung'] : 300)));
     $datei = zd_paths()['datadir'] . '/mqtt_letzte.json';
     $alt = zd_json_lesen($datei);
     $letzte_voll = isset($alt['_voll']) ? (int) $alt['_voll'] : 0;
-    $voll = ($auffr === 0 || time() - $letzte_voll >= $auffr);
+    /* Anderes Praefix als beim letzten Senden: Vollversand (M5, auch fuer
+     * einen Wechsel, der nicht ueber den Reiter MQTT kam). */
+    $anderes = isset($alt['_praefix']) && $alt['_praefix'] !== $praefix;
+    $voll = ($auffr === 0 || $anderes || time() - $letzte_voll >= $auffr);
 
     $zu_senden = array();
     foreach ($paare as $k => $v) {
@@ -2874,6 +3528,7 @@ function zd_mqtt_senden_bei_aenderung(array $paare, $praefix, array $cfg)
             $merken[$k] = $v === null ? null : (string) $v;
         }
         $merken['_voll'] = $voll ? time() : $letzte_voll;
+        $merken['_praefix'] = (string) $praefix;
         zd_json_schreiben($datei, $merken);
     }
     return $ok;
@@ -2924,6 +3579,8 @@ function zd_mqtt_themen()
         'geraetN/pack/<SN>/dvolt' => 'ZD_MQTT.P_DVOLT',
         'geraetN/pack/<SN>/temp'  => 'ZD_MQTT.P_TEMP',
         'geraetN/pack/<SN>/watt'  => 'ZD_MQTT.P_WATT',
+        'status/ts'          => 'ZD_MQTT.STATUS_TS',
+        'status/zaehler'     => 'ZD_MQTT.STATUS_ZAEHLER',
     );
 }
 

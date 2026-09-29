@@ -93,6 +93,62 @@ zd_marke_weg() {
 }
 trap zd_marke_weg EXIT
 
+# ---- Nur einmal je Einbau ----
+# LoxBerry ruft beim Upgrade postinstall UND postupgrade, und postupgrade.sh
+# leitet hierher weiter (Regeln/06). Der zweite Lauf findet die Marke nicht
+# mehr (der trap oben hat sie geraeumt) und hielte das Update sonst fuer eine
+# Neuinstallation (Entscheidung 1, Befund I1). Der Merker traegt Auspackordner
+# ($1) UND Fassung ($4) und wird erst am Ende eines gelungenen Laufs
+# geschrieben. Bauform AnkerSolix 0.9.22 / BatterieBMS 0.9.30.
+ZD_EINBAU="$BASE/data/plugins/$PFOLDER.postinstall_lauf"
+ZD_KENNUNG="$(basename "${1:-ohne-tempordner}")|${4:-ohne-fassung}"
+if [ -f "$ZD_EINBAU" ] && [ "$(cat "$ZD_EINBAU" 2>/dev/null)" = "$ZD_KENNUNG" ]; then
+    echo "<INFO> postinstall lief in diesem Einbau bereits - der zweite Aufruf"
+    echo "<INFO> aus postupgrade.sh wird uebersprungen."
+    exit 0
+fi
+
+# ---- Neuinstallation oder Aktualisierung? (Entscheidung 1, Befund I1/C4) ----
+#
+# Allein die Marke aus preupgrade.sh entscheidet, ohne Altersvergleich. Bis
+# 0.9.27 spielte auch eine Neuinstallation liegengebliebene Zweitschriften
+# ein: in WSL gemessen (Fall E2) trug die neue Konfiguration das alte
+# Aktionstoken mit freigegebener Steuerung, und der erste Minutentakt
+# startete ueber den alten soll_laufen einen Dienst, den niemand gestartet
+# hatte. Jetzt werden bei einer Neuinstallation beide Zweitschriften, der
+# Bestandsordner (Verlauf, Energie, soll_laufen) und ein Sollmerker alter
+# Bauart nach <name>.alt verschoben und EINMAL gemeldet. Die Selbstheilung
+# der Bibliothek liest nur <ordner>.backup.json, nie .alt; uninstall raeumt
+# .alt mit ab. Nur, wenn die Konfiguration selbst nichts traegt - eine
+# gueltige Konfiguration wird nie angefasst.
+ZD_UPGRADE=0
+[ -f "$ZD_MARKE" ] && ZD_UPGRADE=1
+ZD_BEISEITE=""
+zd_beiseite() {   # $1 Pfad unter $BASE
+    [ -e "$1" ] || return 0
+    zd_ziel="$1.alt"
+    [ -e "$zd_ziel" ] && zd_ziel="$1.alt.$(date +%Y%m%d_%H%M%S)"
+    if mv "$1" "$zd_ziel" 2>/dev/null; then
+        chmod go-rwx "$zd_ziel" 2>/dev/null
+        ZD_BEISEITE="$ZD_BEISEITE $zd_ziel"
+    else
+        echo "<WARNING> $1 liess sich nicht beiseitelegen."
+    fi
+}
+if [ "$ZD_UPGRADE" = "0" ]; then
+    ZD_CF_REST=$(tr -d ' \t\n\r' < "$PCONFIG/zendure.json" 2>/dev/null)
+    if [ -z "$ZD_CF_REST" ] || [ "$ZD_CF_REST" = "{}" ]; then
+        zd_beiseite "$BASE/config/plugins/$PFOLDER.backup.json"
+        zd_beiseite "$BASE/config/plugins/$PFOLDER.backup.zendure.json"
+        zd_beiseite "$PBESTAND"
+        zd_beiseite "$PDATA/soll_laufen"
+    fi
+    if [ -n "$ZD_BEISEITE" ]; then
+        echo "<WARNING> Neuinstallation (keine Upgrade-Marke): Einstellungen und Bestaende einer"
+        echo "<WARNING> frueheren Installation wurden NICHT uebernommen, sondern beiseitegelegt:$ZD_BEISEITE"
+    fi
+fi
+
 mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PDATA/mosq" \
          "$PBESTAND/verlauf" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
@@ -150,7 +206,8 @@ fi
 # Fehler erneut.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/zendure.json"
-if [ -f "$BK" ]; then
+# Nur bei einer Aktualisierung (Entscheidung 1, siehe oben).
+if [ "$ZD_UPGRADE" = "1" ] && [ -f "$BK" ]; then
     INHALT=$(tr -d ' \t\n\r' < "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] || [ -z "$INHALT" ]; then
         cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
@@ -197,9 +254,19 @@ chmod 755 "$PBIN/zendure_dienst.php" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PBESTAND" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 700 "$PDATA/mosq" 2>/dev/null
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Geraete eintragen und den"
-echo "<INFO> Dienst im Reiter Einstellungen starten."
+# Nach einer Aktualisierung kein Erstanleitungstext (Befund I5, Regeln/06).
+if [ "$ZD_UPGRADE" = "1" ]; then
+    echo "<OK> Aktualisierung abgeschlossen."
+    if [ -f "$PBESTAND/soll_laufen" ]; then
+        echo "<INFO> Der Dienst lief vor der Aktualisierung; der Waechter startet ihn binnen einer Minute wieder."
+    else
+        echo "<INFO> Der Dienst war vor der Aktualisierung angehalten und bleibt es (Reiter Einstellungen)."
+    fi
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Bitte die Plugin-Oberflaeche oeffnen, die Geraete eintragen und den"
+    echo "<INFO> Dienst im Reiter Einstellungen starten."
+fi
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
@@ -218,6 +285,8 @@ NETZ_PDIR="${3:-zendure}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 netz_zurueck() {
     datei=$1; soll=$2
+    # Nur bei einer Aktualisierung (Entscheidung 1, Befund I1).
+    [ "$ZD_UPGRADE" = "1" ] || return 0
     ziel="$NETZ_CFG/$datei"
     zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
     [ -f "$zweit" ] || return 0
@@ -251,5 +320,14 @@ netz_zurueck "zendure.json" "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c
 # vollen Versand und sonst nichts.
 rm -f "$PDATA/mqtt_letzte.json" 2>/dev/null
 
+# Ohne Bedingung: Konfiguration und beide Zweitschriften auf 600 (Befund I4,
+# 29.09.2026). Darin stehen Aktionstoken und Broker-Passwort; bis 0.9.27
+# blieben sie nach cp -p aus einer 644-Zweitschrift auf 644.
+for ZD_F in "$PCONFIG/zendure.json" "$BASE/config/plugins/$PFOLDER.backup.json" \
+            "$BASE/config/plugins/$PFOLDER.backup.zendure.json"; do
+    [ -f "$ZD_F" ] && chmod 600 "$ZD_F" 2>/dev/null
+done
 
+printf '%s' "$ZD_KENNUNG" > "$ZD_EINBAU" 2>/dev/null \
+    || echo "<WARNING> Der Einbaumerker $ZD_EINBAU liess sich nicht schreiben."
 exit 0
