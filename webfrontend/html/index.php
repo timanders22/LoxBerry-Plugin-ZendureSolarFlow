@@ -34,6 +34,14 @@
  * Und unabhaengig von der Aktion:
  *   ?selftest=1&token=T  prueft NUR das Token, ohne irgendetwas auszuloesen
  *
+ * Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026): laden, entladen,
+ * aus, socmin, socmax, grenzeaus und grenzeein mit DEMSELBEN Wert je Geraet
+ * innerhalb von 60 s werden nicht erneut eingereiht: HTTP 200,
+ * SET;OK=1;AKTION=..;UNVERAENDERT=1;SEIT_S=n. laden, entladen und aus gelten
+ * als ein Sollwert (die Leistung). Ein anderer Wert geht sofort hinaus (kein
+ * 429). Ohne nutzbaren Merker: 503 GRUND=GLEICHWERT_MERKER, nichts
+ * eingereiht. Die Schreibbremse des Dienstes bleibt.
+ *
  * Jeder schaltende Aufruf nimmt zusaetzlich &dry=1: dann wird der Befehl
  * vollstaendig fertiggerechnet - Grenzen, Rasterung, Befehlssatz, Nutzlast -
  * und NICHT gesendet. Die Antwort nennt die fertige Nutzlast. Dafuer muss die
@@ -432,7 +440,39 @@ if ($zd_aktion === 'abruf') {
     }
 }
 
+/* Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026, Entscheidung
+ * Nr. 19; Vorbild EVCC 0.9.37). Erst sind Aktion, Wert, Freigabe und Dienst
+ * geprueft (oben), dann kommt die Unterdrueckung, dann das Einreihen. Der
+ * Merker bleibt bis nach der Antwort des Dienstes gesperrt; laesst er sich
+ * nicht oeffnen, faellt es geschlossen aus (503) - eingereiht wird dann
+ * nichts. abruf und der Trockenlauf sind nicht betroffen (Schluessel ''). */
+$zd_gw_schl = zd_gleichwert_schluessel($zd_befehl);
+$zd_gw = null;
+$zd_gw_merker = array();
+$zd_gw_wert = zd_gleichwert_wert($zd_befehl);
+if ($zd_gw_schl !== '') {
+    $zd_gw = zd_gleichwert_oeffnen();
+    if ($zd_gw === false) {
+        zd_ep_abweisung('GLEICHWERT_MERKER', $zd_aktion);
+        http_response_code(503);
+        echo 'SET;OK=0;AKTION=' . $zd_aktion . ";GRUND=GLEICHWERT_MERKER\n";
+        echo "Der Merker der Gleichwert-Unterdrueckung laesst sich nicht oeffnen - es wurde nichts gesendet. Protokoll im Reiter Logdateien.\n";
+        exit;
+    }
+    $zd_gw_merker = zd_gleichwert_lesen($zd_gw);
+    $zd_seit = zd_gleichwert_seit($zd_gw_merker, $zd_gw_schl, $zd_gw_wert);
+    if ($zd_seit >= 0) {
+        zd_gleichwert_schliessen($zd_gw, null);
+        printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
+            $zd_aktion, $zd_seit, $zd_seit);
+        exit;
+    }
+}
+
 list($zd_erg, $zd_meldung) = zd_befehl_absetzen($zd_befehl);
+if ($zd_gw !== null) {
+    zd_gleichwert_schliessen($zd_gw, zd_gleichwert_nachher($zd_gw_merker, $zd_gw_schl, $zd_gw_wert, $zd_erg === 1));
+}
 if ($zd_erg === 0) {
     http_response_code(500);
 }

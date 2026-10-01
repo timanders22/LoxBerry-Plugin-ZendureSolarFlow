@@ -479,6 +479,18 @@ function zd_selbsttest_ausgabe()
 }
 
 /**
+ * Einen Sollwert-Befehl aus dem Reiter Test absetzen und den Merker der
+ * Gleichwert-Unterdrueckung nachfuehren (X-7). Unterdrueckt wird hier nichts;
+ * ein Trockenlauf beruehrt den Merker nicht.
+ */
+function zd_test_befehl($befehl)
+{
+    $r = zd_befehl_absetzen($befehl);
+    zd_gleichwert_nachfuehren($befehl, $r[0]);
+    return $r;
+}
+
+/**
  * Fuehrt eine Aktion des Reiters Test aus.
  * Rueckgabe: array(stand, Meldung) - stand wie bei zd_befehl_absetzen.
  */
@@ -504,8 +516,8 @@ function zd_test_aktion($aktion)
             return zd_befehl_absetzen(array('aktion' => 'abruf'), 8);
 
         case 'aus':
-            return zd_befehl_absetzen(array('aktion' => 'aus', 'geraet' => $nr,
-                                            'trocken' => $trocken));
+            return zd_test_befehl(array('aktion' => 'aus', 'geraet' => $nr,
+                                        'trocken' => $trocken));
 
         case 'laden':
         case 'entladen':
@@ -513,8 +525,8 @@ function zd_test_aktion($aktion)
             if (!preg_match('/^[0-9]{1,5}$/', $watt)) {
                 return array(0, zd_t('TEST.M_WATT_UNGUELTIG'));
             }
-            return zd_befehl_absetzen(array('aktion' => $aktion, 'geraet' => $nr,
-                                            'watt' => (int) $watt, 'trocken' => $trocken));
+            return zd_test_befehl(array('aktion' => $aktion, 'geraet' => $nr,
+                                        'watt' => (int) $watt, 'trocken' => $trocken));
 
         default:
             return array(0, zd_t('TEST.M_UNBEKANNT'));

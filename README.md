@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.29 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.30 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,26 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.30
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an einer Geräte-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Speicher.
+
+* **Neuinstallation:** Zweitschriften und Bestand werden schon vor dem Kopieren der
+  Cron-Datei beiseitegelegt (`preinstall.sh`). Bisher galt das alte Token nach
+  einer Neuinstallation weiter, und der Wächter konnte einen alten Dienst starten.
+* **Befehlsbremse:** Derselbe Sollwert (laden, entladen, aus, socmin, socmax,
+  grenzeaus, grenzeein) innerhalb von 60 s wird nicht erneut gesendet:
+  `UNVERAENDERT=1`, HTTP 200. Bisher kam die Wiederholung innerhalb der
+  Schreibbremse als HTTP 500 zurück, und `aus` sowie die Grenzen gingen jedes Mal
+  ans Gerät. Die Schreibbremse bleibt.
+* **Nach einer Beanstandung wird nichts gespeichert:** Anführungs- und
+  Steuerzeichen, unbekannte Auswahlen und ein Passwortfeld als Liste werden
+  beanstandet statt still geändert. Es gibt kein „Gespeichert – bis auf …“ mehr.
+* Kommentare der Loxone-Vorlagen haben höchstens 40 Zeichen; wer sie nutzt,
+  importiert die Vorlagen neu.
 
 ## Version 0.9.29
 
@@ -1043,7 +1063,12 @@ löschte ein Tippfehler das Gerät.
 Das gilt nicht mehr (Entscheidung vom 30.09.2026): Bei einer Beanstandung wird
 **nichts** gespeichert, auch nicht das Übrige. Dafür stehen die eingetippten
 Werte danach wieder im Formular, das beanstandete Feld rot umrandet; das
-Broker-Passwort kommt nie zurück.
+Broker-Passwort kommt nie zurück. Auch still Zurechtgebogenes wird
+beanstandet statt gespeichert: Anführungs- und Steuerzeichen in einem Feld
+der Gerätetabelle, in Broker-Adresse oder Broker-Benutzer (bisher still
+entfernt), ein unbekannter Weg, Befehlssatz, ein Modell außerhalb der
+Auswahl und eine unbekannte Temperatur-Umrechnung (bisher still durch die
+Vorgabe ersetzt). Nur Leerraum am Rand fällt still weg.
 
 ### Fremde Formulare wirkten
 
@@ -1376,6 +1401,12 @@ die Bremse: ein unveränderter Sollwert wird gar nicht erst geschrieben. Bei
 60 s Takt fallen damit statt 1440 Schreibvorgängen am Tag nur noch die
 tatsächlichen Änderungen an.
 
+Davor sitzt am Endpunkt die **Gleichwert-Unterdrückung**: derselbe Wert
+innerhalb von 60 s erreicht den Dienst gar nicht und wird mit
+`UNVERAENDERT=1` beantwortet. Bisher kam ein wiederholter gleicher Wert
+innerhalb der Bremse als `OK=0` mit HTTP 500 „Schreibbremse“ zurück, und `aus`
+sowie die Grenzen gingen ohne Bremse jedes Mal an das Gerät.
+
 ## Watchdog: das Gerät hat keinen, das Plugin kann einen
 
 Zendure stoppt nicht von selbst, wenn Loxone schweigt — ein gesetzter Sollwert
@@ -1416,6 +1447,15 @@ mit ausgewertet.
 
 Schaltende Aufrufe antworten mit `SET;OK=…`: `1` erledigt, `0` abgelehnt (mit
 Grund), `2` eingereiht, aber ohne Antwort in der Wartezeit.
+
+Derselbe Sollwert (`laden`, `entladen`, `aus`, `socmin`, `socmax`, `grenzeein`,
+`grenzeaus`) je Gerät wird innerhalb von 60 s nicht erneut gesendet: die
+Antwort ist `SET;OK=1;AKTION=…;UNVERAENDERT=1;SEIT_S=…` mit HTTP 200.
+`laden`, `entladen` und `aus` gelten dabei als ein Sollwert, die Leistung.
+Ein anderer Wert geht sofort an den Dienst, dort gilt weiter die
+Schreibbremse. `abruf` und `dry=1` sind nicht betroffen. Lässt sich der
+Merker dafür nicht öffnen, antwortet der Endpunkt mit HTTP 503
+`GRUND=GLEICHWERT_MERKER` und sendet nichts.
 
 Jeder schaltende Aufruf nimmt zusätzlich **`&dry=1`**: dann wird der Befehl
 vollständig fertiggerechnet und **nicht** gesendet; die Antwort nennt die

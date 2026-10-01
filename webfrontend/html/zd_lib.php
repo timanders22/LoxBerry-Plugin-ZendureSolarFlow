@@ -1903,6 +1903,181 @@ function zd_log_ende($datei, $anzahl = 400, $block = 8192)
     return array_slice(array_reverse($zeilen), 0, $anzahl);
 }
 
+/* ---------------- Gleichwert-Unterdrueckung (X-7) ----------------
+ *
+ * B-Nachzug 01.10.2026, Entscheidung Nr. 19; Vorbild EVCC 0.9.37
+ * (webfrontend/html/index.php, Befehlsbremse) und der AnkerSolix-Nachzug. Ein
+ * Sollwert-Befehl des Endpunkts mit DEMSELBEN Wert geht innerhalb von 60 s
+ * nicht erneut in die Warteschlange (HTTP 200, UNVERAENDERT=1). Bis 0.9.30
+ * reihte ein Loxone-Ausgang, der denselben Wert wiederholt, jeden Aufruf
+ * ein; innerhalb der Schreibbremse (ab Werk 30 s) kam er als OK=0 mit
+ * HTTP 500 "Schreibbremse" zurueck, "aus" und die Grenzen gingen ohne
+ * Schreibbremse jedes Mal an das Geraet. Ein anderer Wert geht sofort
+ * hinaus - ein zusaetzliches 429 gibt es nicht (Nr. 19); Schreibbremse,
+ * Wiederholungssperre und Rasterung des Dienstes bleiben. */
+
+/** Fenster der Gleichwert-Unterdrueckung in Sekunden. */
+function zd_gleichwert_fenster()
+{
+    return 60;
+}
+
+/**
+ * Merkerschluessel eines Befehls, '' fuer alle nicht betroffenen.
+ *
+ * Betroffen sind die Sollwert-Befehle (Nr. 19): laden, entladen und aus
+ * teilen sich EINEN Schluessel je Geraet - sie setzen alle drei die Leistung,
+ * und "laden 500" nach "entladen 300" ist ein neuer Sollwert. socmin, socmax,
+ * grenzeaus und grenzeein sind je eine eigene Grenze. Nicht abruf (Ereignis
+ * mit eigener Bremse), nicht der Trockenlauf (sendet nichts). Das Geraet als
+ * Zahl: "01" ist dasselbe Geraet wie "1".
+ */
+function zd_gleichwert_schluessel($befehl)
+{
+    if (!is_array($befehl) || !empty($befehl['trocken']) || !isset($befehl['aktion'])) {
+        return '';
+    }
+    $aktion = (string) $befehl['aktion'];
+    $nr = isset($befehl['geraet']) ? (int) $befehl['geraet'] : 1;
+    if (in_array($aktion, array('laden', 'entladen', 'aus'), true)) {
+        return 'leistung|' . $nr;
+    }
+    if (in_array($aktion, array('socmin', 'socmax', 'grenzeaus', 'grenzeein'), true)) {
+        return $aktion . '|' . $nr;
+    }
+    return '';
+}
+
+/** Der verglichene Wert eines Befehls: Aktion samt watt bzw. prozent. */
+function zd_gleichwert_wert($befehl)
+{
+    $w = (is_array($befehl) && isset($befehl['aktion'])) ? (string) $befehl['aktion'] : '';
+    foreach (array('watt', 'prozent') as $k) {
+        if (is_array($befehl) && isset($befehl[$k])) {
+            $w .= ';' . $k . '=' . (int) $befehl[$k];
+        }
+    }
+    return $w;
+}
+
+/**
+ * Den Merker oeffnen und sperren. Rueckgabe: Dateizeiger oder false.
+ *
+ * Die Sperre bleibt waehrend des Einreihens und Wartens gehalten (wie EVCC):
+ * zwei gleichzeitige gleiche Aufrufe reihen so nur einmal ein. "e"
+ * (close-on-exec), damit ein Kindprozess die Sperre nie erbt. Angelegt wird
+ * nur der Merker selbst, kein Ordner: ohne Datenordner false, und der
+ * Endpunkt faellt geschlossen aus (503).
+ */
+function zd_gleichwert_oeffnen()
+{
+    $p = zd_paths();
+    $f = $p['datadir'] . '/befehl_gleichwert.json';
+    $fh = is_dir($p['datadir']) ? @fopen($f, 'c+e') : false;
+    if ($fh !== false && !@flock($fh, LOCK_EX)) {
+        @fclose($fh);
+        $fh = false;
+    }
+    if ($fh === false) {
+        zd_log_gebremst('gleichwert', 'Der Merker der Gleichwert-Unterdrueckung (' . $f . ') laesst sich '
+            . 'nicht oeffnen - schaltende Befehle werden mit 503 abgewiesen, bis das behoben ist. '
+            . 'Pruefen: Datenordner, Platz und Eigentuemer (loxberry).', 600);
+    }
+    return $fh;
+}
+
+/** Den gesperrten Merker lesen; Unlesbares gilt als leer (dann geht der
+ * Befehl hinaus - im Zweifel senden, nie still verschlucken). */
+function zd_gleichwert_lesen($fh)
+{
+    @rewind($fh);
+    $d = json_decode((string) stream_get_contents($fh), true);
+    return is_array($d) ? $d : array();
+}
+
+/** Sekunden seit DEMSELBEN Wert, -1 wenn ein anderer Wert gemerkt ist oder
+ * der gemerkte nicht im Fenster liegt (eine zurueckgestellte Uhr haelt
+ * nichts zurueck). */
+function zd_gleichwert_seit($merker, $schluessel, $wert)
+{
+    if ($schluessel === '' || !isset($merker[$schluessel]) || !is_array($merker[$schluessel])) {
+        return -1;
+    }
+    $e = $merker[$schluessel];
+    if (!isset($e['w'], $e['t']) || (string) $e['w'] !== (string) $wert) {
+        return -1;
+    }
+    $seit = time() - (int) $e['t'];
+    return ($seit >= 0 && $seit < zd_gleichwert_fenster()) ? $seit : -1;
+}
+
+/**
+ * Der Merker nach einem Befehl: bestaetigt (ok=1) - der eigene Wert mit
+ * Zeit; abgelehnt oder ohne Antwort (0/2) - der eigene Eintrag faellt weg,
+ * ein Wiederholen geht dann hinaus. Eintraege ausserhalb des Fensters
+ * werden nicht mitgeschleppt.
+ */
+function zd_gleichwert_nachher($merker, $schluessel, $wert, $gelungen)
+{
+    $jetzt = time();
+    foreach ($merker as $k => $e) {
+        $alter = (is_array($e) && isset($e['t'])) ? $jetzt - (int) $e['t'] : -1;
+        if ($alter < 0 || $alter >= zd_gleichwert_fenster()) {
+            unset($merker[$k]);
+        }
+    }
+    if ($schluessel !== '') {
+        if ($gelungen) {
+            $merker[$schluessel] = array('w' => (string) $wert, 't' => $jetzt);
+        } else {
+            unset($merker[$schluessel]);
+        }
+    }
+    return $merker;
+}
+
+/** Den Merker schreiben (ausser bei null), entsperren und schliessen.
+ * Erfolg nur bei vollstaendig geschriebenem Inhalt (Fehlerklasse 1). */
+function zd_gleichwert_schliessen($fh, $merker)
+{
+    $ok = true;
+    if ($merker !== null) {
+        $roh = (string) json_encode($merker);
+        $ok = @ftruncate($fh, 0) && @rewind($fh) && @fwrite($fh, $roh) === strlen($roh) && @fflush($fh);
+        if (!$ok) {
+            zd_log_gebremst('gleichwert_schreiben', 'Der Merker der Gleichwert-Unterdrueckung liess sich '
+                . 'nicht schreiben - ein gleicher Befehl geht dann erneut hinaus. '
+                . 'Pruefen: Platz und Eigentuemer (loxberry).', 600);
+        }
+    }
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
+    return $ok;
+}
+
+/**
+ * Den Merker nach einem Befehl aus dem Reiter Test nachfuehren.
+ *
+ * Der Reiter Test unterdrueckt nichts (ein Mensch drueckt den Knopf
+ * bewusst). Er fuehrt den Merker aber nach: sonst wuerde ein Loxone-Befehl,
+ * der kurz zuvor denselben Wert setzte, nach einem anderen Wert aus dem
+ * Reiter Test noch 60 s lang unterdrueckt. Laesst sich der Merker nicht
+ * oeffnen, bleibt es still - der Endpunkt faellt dann ohnehin geschlossen aus.
+ */
+function zd_gleichwert_nachfuehren($befehl, $erg)
+{
+    $schl = zd_gleichwert_schluessel($befehl);
+    if ($schl === '') {
+        return false;
+    }
+    $fh = zd_gleichwert_oeffnen();
+    if ($fh === false) {
+        return false;
+    }
+    return zd_gleichwert_schliessen($fh, zd_gleichwert_nachher(zd_gleichwert_lesen($fh), $schl,
+        zd_gleichwert_wert($befehl), (int) $erg === 1));
+}
+
 /** Obergrenze fuer eine Wartezeit, die aus einer Web-Anfrage kommt. */
 define('ZD_WARTEN_WEB', 10);
 
@@ -3951,7 +4126,18 @@ function zd_check($feld)
  *
  * Die Herkunft steht jeweils im Kommentar - alle Eigenschaftsnamen stammen aus
  * der offiziellen Home-Assistant-Integration (device.py).
+ *
+ * Die lange Bedeutung steht in der Feldtabelle des Reiters "Einbindung in
+ * Loxone". In die Vorlage geht der Kurztext ZD_KURZ.<FELD> (zd_status_kurz):
+ * dort wird der Comment zum Kachelnamen, hoechstens 40 Zeichen samt Einheit
+ * (Regeln/07; B-Nachzug 01.10.2026 - bis 0.9.30 standen dort Saetze bis 163
+ * Zeichen).
  */
+function zd_status_kurz($feld)
+{
+    return zd_vorlagentext('ZD_KURZ.' . $feld);
+}
+
 function zd_status_felder()
 {
     return array(
@@ -3988,7 +4174,7 @@ function zd_vorlage($nummer = 1)
     $p = zd_paths();
     $cmds = array();
     foreach (zd_status_felder() as $feld => $info) {
-        $bedeutung = zd_vorlagentext($info[1]);   // siehe dort: doppelte Maskierung
+        $bedeutung = zd_status_kurz($feld);   // Kurztext, siehe zd_status_felder()
         $cmds[] = array(
             'title'   => 'ZENDURE_' . $nummer . '_' . $feld,
             'comment' => $bedeutung . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
@@ -4004,7 +4190,7 @@ function zd_vorlage($nummer = 1)
             'title'   => 'Zendure SolarFlow ' . (int) $nummer,
             'address' => $adresse,
             'polling' => '60',
-            'comment' => 'Erzeugt vom LoxBerry-Plugin Zendure SolarFlow (' . date('d.m.Y') . ')',
+            'comment' => sprintf(zd_vorlagentext('LOX.VI_KOPF'), date('d.m.Y')),
         ), $cmds),
     );
 }
@@ -4060,7 +4246,7 @@ function zd_vorlage_energie($nummer = 1, $zeitraum = 'tag')
             'title'   => 'Zendure Energie ' . (int) $nummer . ' ' . $zeitraum,
             'address' => $adresse,
             'polling' => '300',
-            'comment' => 'Erzeugt vom LoxBerry-Plugin Zendure SolarFlow (' . date('d.m.Y') . ')',
+            'comment' => sprintf(zd_vorlagentext('LOX.VI_KOPF'), date('d.m.Y')),
         ), $cmds),
     );
 }
@@ -4259,7 +4445,7 @@ function zd_vorlage_summe()
             'title'   => 'Zendure SolarFlow Summe',
             'address' => $adresse,
             'polling' => '60',
-            'comment' => 'Erzeugt vom LoxBerry-Plugin Zendure SolarFlow (' . date('d.m.Y') . ')',
+            'comment' => sprintf(zd_vorlagentext('LOX.VI_KOPF'), date('d.m.Y')),
         ), $cmds),
     );
 }

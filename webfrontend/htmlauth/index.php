@@ -361,51 +361,66 @@ if ($zd_post && isset($_POST['speichern'])) {
 
     /* Geraetetabelle: bis zu sechs Zeilen.
      *
-     * Eine beanstandete Zeile wird UEBERGANGEN, alles Uebrige gespeichert -
-     * Hausregel vom 16.08.2026, "Beanstandungen melden, nicht das ganze
-     * Speichern verhindern". Bis 0.9.8 hing das Speichern an
-     * "if (!$zd_fehler)", und ein einziges Leerzeichen in einer IP warf
-     * Geraetenamen, Takt, Schreibbremse, Schrittweite, Aufbewahrungsdauer,
-     * Wartezeit und Temperaturumrechnung gleich mit weg. Gemessen, Pruefstand
-     * p3_formular.php.
-     *
-     * Uebergangen heisst hier: die BISHERIGE Angabe derselben Zeile bleibt
-     * stehen. Sie einfach wegzulassen waere schlimmer als das alte Verhalten -
-     * dann loeschte ein Tippfehler das Geraet.
-     *
-     * Seit Entscheidung 16 (30.09.2026) wird bei einer Beanstandung gar
-     * nichts gespeichert (unten); das Uebergehen bestimmt nur noch, welche
-     * Zeile gemeldet wird. */
-    $zd_alt_zeilen = isset($zd_cfg['geraete']) && is_array($zd_cfg['geraete'])
-                   ? array_values($zd_cfg['geraete']) : array();
+     * Eine beanstandete Zeile wird gemeldet, ihre Felder markiert. Gespeichert
+     * wird dann nichts (Entscheidung 16, unten). Bis 0.9.30 stand hier noch
+     * der Rettungsweg der Hausregel vom 16.08.2026: die BISHERIGE Angabe der
+     * Zeile wurde in die neue Liste uebernommen und die Meldung sagte "Die
+     * bisherige Angabe dieser Zeile bleibt stehen". Seit Entscheidung 16
+     * wirkte er nur noch auf die Meldung; zurueckgebaut im B-Nachzug
+     * 01.10.2026. */
     $zd_neu = array();
-    /* Meldet eine Zeile ab und rettet, was dort bisher stand. */
-    $zd_zeile_ab = function ($i, $meldung, $felder = array()) use (&$zd_neu, &$zd_fehler, &$zd_bean, $zd_alt_zeilen) {
+    /* Meldet eine Zeile ab und markiert die genannten Felder (X-2). */
+    $zd_zeile_ab = function ($i, $meldung, $felder = array()) use (&$zd_fehler, &$zd_bean) {
         foreach ($felder as $zd_bf) {
             $zd_bean[] = $zd_bf . '#' . $i;     // X-2
         }
-        if (isset($zd_alt_zeilen[$i]) && is_array($zd_alt_zeilen[$i])) {
-            $zd_neu[$i] = $zd_alt_zeilen[$i];
-            $zd_fehler[] = $meldung . ' ' . zd_t('EINST.FEHLER_ZEILE_ALT');
-        } else {
-            $zd_fehler[] = $meldung . ' ' . zd_t('EINST.FEHLER_ZEILE_WEG');
-        }
+        $zd_fehler[] = $meldung;
     };
+    /* Die Spalten der Geraetezeile mit ihrer Ueberschrift (fuer Meldungen). */
+    $zd_spalten = array('name' => 'T_NAME', 'art' => 'T_ART', 'ip' => 'T_IP', 'prodkey' => 'T_PRODKEY',
+                        'deviceid' => 'T_DEVICEID', 'sn' => 'T_SN', 'modell' => 'T_MODELL', 'satz' => 'T_SATZ',
+                        'max_laden' => 'T_MAXLADEN', 'max_entladen' => 'T_MAXENTLADEN',
+                        'quittungsfeld' => 'T_QUITTUNGSFELD', 'kapazitaet' => 'T_KAPAZITAET');
     for ($i = 0; $i < 6; $i++) {
+        /* Nur Leerraum am Rand faellt still weg (Nr. 19). Bis 0.9.30
+         * entfernte $hol() still Steuer- und Anfuehrungszeichen: aus
+         * "O'Brien" wurde "OBrien" gespeichert, aus "\"192.168.1.5\"" eine
+         * gueltige IP. Jetzt bleibt der Wert, wie er kam, und die Pruefung
+         * unten beanstandet ihn; eine Liste statt eines Werts liefert null. */
         $hol = function ($feld) use ($i) {
             $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
-            // Nur Steuerzeichen, Anfuehrungszeichen und Leerraum entfernen -
-            // ein hartes preg_replace auf eine Positivliste zerstoert
-            // eingefuegte Werte (belegt am ACTi-Plugin am 26.07.2026).
-            return isset($a[$i]) ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $a[$i])) : '';
+            if (!isset($a[$i])) {
+                return '';
+            }
+            return is_string($a[$i]) ? trim($a[$i]) : null;
         };
-        $art = $hol('g_art') === 'mqtt' ? 'mqtt' : 'http';
+        $art = $hol('g_art');
         $ip = $hol('g_ip');
         $prodkey = $hol('g_prodkey');
         $deviceid = $hol('g_deviceid');
         $name = $hol('g_name');
         if ($ip === '' && $prodkey === '' && $deviceid === '' && $name === '') {
             continue;   // leere Zeile
+        }
+        /* Nr. 19: Steuer- oder Anfuehrungszeichen (oder eine Liste) in einem
+         * Feld der Zeile werden beanstandet, nicht still entfernt. */
+        $zd_zeichen = array();
+        $zd_znamen = array();
+        foreach ($zd_spalten as $zd_sp => $zd_ue) {
+            $zd_sw = $hol('g_' . $zd_sp);
+            if ($zd_sw === null || preg_match('/[\x00-\x1F\x7F"\']/', $zd_sw)) {
+                $zd_zeichen[] = 'g_' . $zd_sp;
+                $zd_znamen[] = zd_e(zd_t('EINST.' . $zd_ue));
+            }
+        }
+        if ($zd_zeichen) {
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_ZEICHEN_ZEILE'), $i + 1, implode(', ', $zd_znamen)), $zd_zeichen);
+            continue;
+        }
+        /* Nr. 19: ein unbekannter Weg wird beanstandet, nicht still zu HTTP. */
+        if ($art !== 'http' && $art !== 'mqtt') {
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_AUSWAHL_ZEILE'), $i + 1, zd_e(zd_t('EINST.T_ART'))), array('g_art'));
+            continue;
         }
         /* Der Name landet in der semikolongetrennten Antwort an den
          * Miniserver. Ein Semikolon oder Gleichheitszeichen darin schiebt
@@ -436,11 +451,21 @@ if ($zd_post && isset($_POST['speichern'])) {
                 continue;
             }
         }
+        /* Nr. 19: ein unbekannter Befehlssatz und ein Modell ausserhalb des
+         * Musters werden beanstandet. Bis 0.9.30 wurde der Satz still zu ''
+         * (automatisch) und das Modell still gekuerzt und kleingeschrieben.
+         * Das Muster ist dasselbe wie beim Zurueckspielen
+         * (zd_geraet_zeile_pruefen). */
         $satz = $hol('g_satz');
-        if (!in_array($satz, $zd_saetze, true)) {
-            $satz = '';
+        if ($satz !== '' && !in_array($satz, $zd_saetze, true)) {
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_AUSWAHL_ZEILE'), $i + 1, zd_e(zd_t('EINST.T_SATZ'))), array('g_satz'));
+            continue;
         }
-        $modell = strtolower(preg_replace('/[^a-z0-9]/i', '', $hol('g_modell')));
+        $modell = $hol('g_modell');
+        if (!preg_match('/^[a-z0-9]{0,40}\z/', $modell)) {
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_AUSWAHL_ZEILE'), $i + 1, zd_e(zd_t('EINST.T_MODELL'))), array('g_modell'));
+            continue;
+        }
         $zd_zeile = array(
             'name'     => $name,
             'art'      => $art,
@@ -474,8 +499,7 @@ if ($zd_post && isset($_POST['speichern'])) {
                 continue;   // leer = Werksgrenze des Modells nehmen
             }
             if (!preg_match('/^[0-9]{1,4}$/', $w)) {
-                // Nur diese eine Grenze verwerfen, nicht die ganze Zeile:
-                // ohne Eintrag gilt die Werksgrenze des Modells.
+                // Beanstandet; gespeichert wird dann nichts (Entscheidung 16).
                 $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_GRENZE'), $i + 1);
                 $zd_bean[] = 'g_' . $feld . '#' . $i;
                 continue;
@@ -540,8 +564,16 @@ if ($zd_post && isset($_POST['speichern'])) {
      * Handler). $zd_cfg kommt aus zd_config(), die Werte ueberleben das
      * Speichern der Einstellungen also unveraendert. */
 
-    $zd_tu = isset($_POST['temp_umrechnung']) ? (string) $_POST['temp_umrechnung'] : 'roh';
-    $zd_cfg['temp_umrechnung'] = in_array($zd_tu, array('roh', 'kelvin10', 'zehntel'), true) ? $zd_tu : 'roh';
+    /* Nr. 19: eine unbekannte oder fehlende Wahl wird beanstandet; bis
+     * 0.9.30 wurde sie still zu 'roh' (auch ueber eine gespeicherte andere
+     * Wahl hinweg). Das Formular sendet die Auswahl immer mit. */
+    $zd_tu = isset($_POST['temp_umrechnung']) ? $_POST['temp_umrechnung'] : null;
+    if (is_string($zd_tu) && in_array($zd_tu, array('roh', 'kelvin10', 'zehntel'), true)) {
+        $zd_cfg['temp_umrechnung'] = $zd_tu;
+    } else {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_AUSWAHL'), zd_e(zd_t('EINST.L_TEMP')));
+        $zd_bean[] = 'temp_umrechnung';
+    }
 
     /* Freie Feldzuordnung.
      *
@@ -557,6 +589,13 @@ if ($zd_post && isset($_POST['speichern'])) {
             // "my.prop-Name" still zu "mypropName".
             $zd_w = (isset($_POST[$zd_praefix . $zd_feld]) && is_string($_POST[$zd_praefix . $zd_feld]))
                   ? trim($_POST[$zd_praefix . $zd_feld]) : '';
+            /* Nr. 19: eine Liste statt eines Namens ist kein leeres Feld (bis
+             * 0.9.30 still "Vorgabe" und damit die Zuordnung geloescht). */
+            if (isset($_POST[$zd_praefix . $zd_feld]) && !is_string($_POST[$zd_praefix . $zd_feld])) {
+                $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZUORDNUNG'), zd_e($zd_feld));
+                $zd_bean[] = $zd_praefix . $zd_feld;
+                continue;
+            }
             if ($zd_w === '' || $zd_w === $zd_vorgabe) {
                 continue;
             }
@@ -580,7 +619,8 @@ if ($zd_post && isset($_POST['speichern'])) {
         $zd_fehler[] = zd_t('EINST.NICHTS_GESPEICHERT');
         $zd_eingaben = zd_eingaben_sammeln('settings', $zd_bean);   // X-2
     } elseif (zd_config_speichern($zd_cfg)) {
-        $zd_meldungen[] = $zd_fehler ? zd_t('EINST.GESPEICHERT_TEILWEISE') : zd_t('EINST.GESPEICHERT');
+        // Ohne Beanstandung gibt es kein "teilweise" mehr (Nr. 16).
+        $zd_meldungen[] = zd_t('EINST.GESPEICHERT');
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_SPEICHERN'), $zd_p['config']);
     }
@@ -622,8 +662,14 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
             zd_t('EINST.L_BROKER_PORT'), 1, 65535);
         $zd_bean[] = 'broker_port';
     }
-    $zd_bh = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_host']) ? $_POST['broker_host'] : '')));
-    if ($zd_bh !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $zd_bh)) {
+    /* Nr. 19: Steuer- und Anfuehrungszeichen werden beanstandet, nicht still
+     * entfernt (bis 0.9.30 wurde aus "\"broker\"" still "broker"). */
+    $zd_bh = isset($_POST['broker_host']) ? $_POST['broker_host'] : '';
+    $zd_bh = is_string($zd_bh) ? trim($zd_bh) : null;
+    if ($zd_bh === null || preg_match('/[\x00-\x1F\x7F"\']/', $zd_bh)) {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZEICHEN'), zd_e(zd_t('EINST.L_BROKER_HOST')));
+        $zd_bean[] = 'broker_host';
+    } elseif ($zd_bh !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $zd_bh)) {
         $zd_fehler[] = zd_t('EINST.FEHLER_BROKER');
         $zd_bean[] = 'broker_host';
     } else {
@@ -638,10 +684,25 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
             zd_t('EINST.L_MQTT_AUFFR'), 0, 3600);
         $zd_bean[] = 'mqtt_auffrischung';
     }
-    $zd_mcfg['broker_user'] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_user']) ? $_POST['broker_user'] : '')));
+    /* Nr. 19 wie bei der Broker-Adresse; dasselbe Muster wie beim
+     * Zurueckspielen (zd_sicherung_wert_pruefen, broker_user). */
+    $zd_bu = isset($_POST['broker_user']) ? $_POST['broker_user'] : '';
+    $zd_bu = is_string($zd_bu) ? trim($zd_bu) : null;
+    if ($zd_bu === null || strlen($zd_bu) > 128 || preg_match('/[\x00-\x1F\x7F"\']/', $zd_bu)) {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZEICHEN'), zd_e(zd_t('EINST.L_BROKER_USER')));
+        $zd_bean[] = 'broker_user';
+    } else {
+        $zd_mcfg['broker_user'] = $zd_bu;
+    }
     // Leeres Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
     // Passwort in der Konfiguration, ohne dass es jemand merkt.
     $zd_bpw = (isset($_POST['broker_pw']) && is_string($_POST['broker_pw'])) ? $_POST['broker_pw'] : '';
+    /* Leer heisst "unveraendert" (Geheimnisfeld). Eine Liste ist nicht leer:
+     * bis 0.9.30 galt sie still als "unveraendert" (Nr. 19). */
+    if (isset($_POST['broker_pw']) && !is_string($_POST['broker_pw'])) {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZEICHEN'), zd_e(zd_t('EINST.L_BROKER_PW')));
+        $zd_bean[] = 'broker_pw';
+    }
     /* Geloescht wird ueber einen Haken daneben (U13, Regeln/04): bis 0.9.27
      * liess sich ein einmal eingetragenes Passwort nie mehr entfernen.
      * Neues Passwort UND Haken zugleich ist ein Widerspruch. */
@@ -677,7 +738,8 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
         }
         $zd_eingaben = zd_eingaben_sammeln('mqtt', $zd_bean);   // X-2
     } elseif (zd_config_speichern($zd_mcfg)) {
-        $zd_meldungen[] = $zd_fehler ? zd_t('EINST.GESPEICHERT_TEILWEISE') : zd_t('EINST.GESPEICHERT');
+        // Ohne Beanstandung gibt es kein "teilweise" mehr (Nr. 16).
+        $zd_meldungen[] = zd_t('EINST.GESPEICHERT');
         $zd_neu_ein = !empty($zd_mcfg['mqtt_ein']);
         $zd_neu_pr = trim((string) $zd_mcfg['mqtt_topic'], '/');
         if ($zd_neu_pr === '') {
@@ -1140,21 +1202,21 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
 <tr>
 <td><?= $zd_i + 1 ?></td>
 <td><input data-role="none" type="text" name="g_name[]"<?= zd_markierung('g_name#' . $zd_i) ?> value="<?= zd_e($zd_v('name')) ?>" size="12"></td>
-<td><select data-role="none" name="g_art[]">
+<td><select data-role="none" name="g_art[]"<?= zd_markierung('g_art#' . $zd_i) ?>>
     <option value="http"<?= $zd_v('art') !== 'mqtt' ? ' selected' : '' ?>>HTTP</option>
     <option value="mqtt"<?= $zd_v('art') === 'mqtt' ? ' selected' : '' ?>>MQTT</option>
 </select></td>
 <td><input data-role="none" type="text" name="g_ip[]"<?= zd_markierung('g_ip#' . $zd_i) ?> value="<?= zd_e($zd_v('ip')) ?>" size="14" placeholder="<?= $zd_i === 0 ? '192.168.1.50' : '' ?>"></td>
 <td><input data-role="none" type="text" name="g_prodkey[]"<?= zd_markierung('g_prodkey#' . $zd_i) ?> value="<?= zd_e($zd_v('prodkey')) ?>" size="12"></td>
 <td><input data-role="none" type="text" name="g_deviceid[]"<?= zd_markierung('g_deviceid#' . $zd_i) ?> value="<?= zd_e($zd_v('deviceid')) ?>" size="12"></td>
-<td><input data-role="none" type="text" name="g_sn[]" value="<?= zd_e($zd_v('sn')) ?>" size="12"></td>
-<td><select data-role="none" name="g_modell[]">
+<td><input data-role="none" type="text" name="g_sn[]"<?= zd_markierung('g_sn#' . $zd_i) ?> value="<?= zd_e($zd_v('sn')) ?>" size="12"></td>
+<td><select data-role="none" name="g_modell[]"<?= zd_markierung('g_modell#' . $zd_i) ?>>
     <option value=""><?= zd_e(zd_t('EINST.MODELL_FREI')) ?></option>
 <?php foreach (array_keys(zd_modelle()) as $zd_mo) { ?>
     <option value="<?= zd_e($zd_mo) ?>"<?= $zd_v('modell') === $zd_mo ? ' selected' : '' ?>><?= zd_e($zd_mo) ?></option>
 <?php } ?>
 </select></td>
-<td><select data-role="none" name="g_satz[]">
+<td><select data-role="none" name="g_satz[]"<?= zd_markierung('g_satz#' . $zd_i) ?>>
     <option value=""><?= zd_e(zd_t('EINST.SATZ_AUTO')) ?></option>
 <?php foreach (zd_befehlssaetze() as $zd_s) { ?>
     <option value="<?= zd_e($zd_s) ?>"<?= $zd_v('satz') === $zd_s ? ' selected' : '' ?>><?= zd_e($zd_s) ?></option>

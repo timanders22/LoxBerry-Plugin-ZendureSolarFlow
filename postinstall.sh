@@ -121,11 +121,21 @@ fi
 # der Bibliothek liest nur <ordner>.backup.json, nie .alt; uninstall raeumt
 # .alt mit ab. Nur, wenn die Konfiguration selbst nichts traegt - eine
 # gueltige Konfiguration wird nie angefasst.
+# Seit dem B-Nachzug 01.10.2026 (X-1) legt preinstall.sh dieselben Pfade
+# schon VOR dem Kopieren der Cron-Datei beiseite, ohne Bedingung an die
+# Konfiguration; hier bleibt der Rueckfall fuer den Fall, dass preinstall.sh
+# nicht lief oder etwas nicht verschieben konnte.
 ZD_UPGRADE=0
 [ -f "$ZD_MARKE" ] && ZD_UPGRADE=1
 ZD_BEISEITE=""
 zd_beiseite() {   # $1 Pfad unter $BASE
     [ -e "$1" ] || return 0
+    # Ein Ordner ohne Datei (ausser der Sperrdatei des Waechters) traegt
+    # nichts Altes: bin/dienst.sh legt den Bestandsordner und darin
+    # dienst.sperre bei jedem Waechterlauf an, auch nach preinstall.sh.
+    if [ -d "$1" ] && [ -z "$(find "$1" -type f ! -name dienst.sperre -print -quit 2>/dev/null)" ]; then
+        return 0
+    fi
     zd_ziel="$1.alt"
     [ -e "$zd_ziel" ] && zd_ziel="$1.alt.$(date +%Y%m%d_%H%M%S)"
     if mv "$1" "$zd_ziel" 2>/dev/null; then
