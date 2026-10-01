@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.30 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.31 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,19 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.31
+
+Nachzug aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 19).
+Gemessen an einer Geräte-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Speicher.
+
+* **Schaltender Aufruf an eine nicht eingerichtete Gerätenummer:** HTTP 404
+  `SET;OK=0;GRUND=GERAET_UNBEKANNT` statt bisher 200 mit einer Statuszeile; es
+  wird nichts eingereiht. Ein eingerichtetes Gerät lässt sich auch dann schalten,
+  wenn es im letzten Abbild fehlt.
+* `geraet=01` (führende Null) wird mit 400 `GRUND=PARAMETER` abgewiesen statt
+  still als „unbekannt“ beantwortet.
+* Lesende Aufrufe sind unverändert.
 
 ## Version 0.9.30
 
@@ -1447,6 +1460,19 @@ mit ausgewertet.
 
 Schaltende Aufrufe antworten mit `SET;OK=…`: `1` erledigt, `0` abgelehnt (mit
 Grund), `2` eingereiht, aber ohne Antwort in der Wartezeit.
+
+Ein schaltender Aufruf (auch `abruf` und `dry=1`) an eine Gerätenummer, die im
+Reiter *Einstellungen* nicht (oder ohne Adresse) eingerichtet ist, bekommt HTTP 404
+`SET;OK=0;AKTION=…;GRUND=GERAET_UNBEKANNT;N=…` (`N` = Zahl der eingerichteten
+Geräte); gesendet wird nichts. Maßgeblich ist die Geräteliste der
+Einstellungen, nicht der letzte Abruf. Bisher kam hier HTTP 200 mit der
+Statuszeile `ZENDURE;OK=0;GRUND=GERAET_UNBEKANNT`, auch für ein eingerichtetes
+Gerät, solange es im letzten Abbild fehlte. Ein gerade eingetragenes Gerät
+übernimmt der Dienst mit seinem nächsten Abruf; bis dahin lehnt er einen
+Befehl daran mit `OK=0` ab. Lesende Aufrufe (`status`, `packs`) zu
+einer unbekannten Nummer antworten weiter mit HTTP 200 und
+`OK=0;GRUND=GERAET_UNBEKANNT`. `geraet` nimmt die Nummer ohne führende Null:
+`geraet=01` wird mit HTTP 400 `GRUND=PARAMETER` abgewiesen.
 
 Derselbe Sollwert (`laden`, `entladen`, `aus`, `socmin`, `socmax`, `grenzeein`,
 `grenzeaus`) je Gerät wird innerhalb von 60 s nicht erneut gesendet: die

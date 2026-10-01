@@ -31,6 +31,11 @@
  *   grenzeein &watt=W    [&geraet=N]
  *   abruf                sofort abrufen statt auf den Takt zu warten
  *
+ * Ein schaltender Aufruf an eine Geraetenummer, die in den Einstellungen nicht
+ * eingerichtet ist: HTTP 404, SET;OK=0;AKTION=..;GRUND=GERAET_UNBEKANNT;N=n
+ * (n = eingerichtete Geraete), es wird nichts gesendet. geraet nimmt die
+ * Nummer ohne fuehrende Null; geraet=01 bekommt 400 GRUND=PARAMETER.
+ *
  * Und unabhaengig von der Aktion:
  *   ?selftest=1&token=T  prueft NUR das Token, ohne irgendetwas auszuloesen
  *
@@ -183,7 +188,15 @@ function zd_param($name, $muster, $vorgabe = '')
  * "$" laesst einen abschliessenden Zeilenumbruch durch. Bis 0.9.27 bestand
  * "dry=1%0A" das Muster, der Vergleich mit '1' aber nicht - ein als
  * Trockenlauf gemeinter Aufruf schaltete den Speicher wirklich (1 POST). */
-$zd_nr      = zd_param('geraet', '/^[0-9]{1,2}\z/', '1');
+/* Geraetenummer ohne fuehrende Null (Nachzug Zendure-g1, 01.10.2026;
+ * Entscheidung Nr. 19). Bis 0.9.31 bestand "01" das Muster. Still als Geraet 1
+ * gedeutet wurde es dort nicht - das Abbild kennt nur den Schluessel "1", die
+ * Antwort war GERAET_UNBEKANNT, bei rohgeraet eine leere Liste mit HTTP 200 -,
+ * aber die Antwort sprach von einem fehlenden Geraet, wo die Nummer falsch
+ * geschrieben war. An den Dienst geht die Nummer mit (int): ob "01" dort als 1
+ * ankaeme, soll nicht davon abhaengen, dass jede Stelle davor mit der
+ * Zeichenkette nachschlaegt. Jetzt 400 GRUND=PARAMETER, lesend wie schaltend. */
+$zd_nr      = zd_param('geraet', '/^(0|[1-9][0-9]?)\z/', '1');
 $zd_zeitraum = zd_param('zeitraum', '/^(tag|monat|jahr)\z/', 'tag');
 $zd_watt    = zd_param('watt', '/^[0-9]{1,5}\z/', '');
 $zd_prozent = zd_param('prozent', '/^[0-9]{1,3}\z/', '');
@@ -316,7 +329,11 @@ if ($zd_aktion === 'liste') {
     exit;
 }
 
-if ($zd_g === null) {
+/* Nur die lesenden Aktionen (packs, status) fragen hier das Abbild; ihre
+ * Antwort bleibt HTTP 200 mit OK=0. Bis 0.9.31 stand diese Abfrage auch vor
+ * jeder schaltenden Aktion - die pruefen ihr Geraet seit dem Nachzug
+ * Zendure-g1 weiter unten gegen die Geraeteliste. */
+if ($zd_g === null && !in_array($zd_aktion, $zd_schaltend, true)) {
     printf("%s;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=%d\n",
         $zd_aktion === 'packs' ? 'PACKS' : 'ZENDURE', count($zd_alle), $zd_alter);
     exit;
@@ -387,6 +404,30 @@ if (in_array($zd_aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), t
         exit;
     }
     $zd_befehl['prozent'] = (int) $zd_prozent;
+}
+
+/* Das Geraet muss eingerichtet sein (Nachzug Zendure-g1, 01.10.2026).
+ * Geprueft wird gegen die Geraeteliste der Konfiguration - dieselbe, aus der
+ * der Dienst arbeitet -, nicht gegen das Abbild. Bis 0.9.31 entschied das
+ * Abbild: ein schaltender Befehl an ein Geraet, das darin fehlte (geraet=2 bei
+ * einem Geraet, oder noch kein Abbild geschrieben), bekam HTTP 200 mit der
+ * Statuszeile "ZENDURE;OK=0;GRUND=GERAET_UNBEKANNT" statt einer
+ * Befehlsantwort, und ein eingerichtetes Geraet ohne Abbild liess sich nicht
+ * schalten. Jetzt 404: die Anfrage ist wohlgeformt (sonst 400), aber das
+ * angesprochene Geraet gibt es nicht. Kein 503 - das gehoert dem Ausfall
+ * einer Quelle (Regeln/07), und ein eingerichtetes Geraet kommt hier nie hin.
+ * Die Pruefung steht vor Freigabe, Dienst und Gleichwert-Merker: nichts wird
+ * eingereiht, der Merker nicht geoeffnet. Gilt auch fuer abruf und dry=1.
+ * zd_geraete() liest mit Selbstheilung; die greift nur ohne Aktionstoken,
+ * und ohne gueltiges Token kaeme der Aufruf nicht bis hier. */
+$zd_ger = zd_geraete();
+if (!isset($zd_ger[$zd_nr])) {
+    zd_ep_abweisung('GERAET_UNBEKANNT', $zd_aktion);
+    http_response_code(404);
+    printf("SET;OK=0;AKTION=%s;GRUND=GERAET_UNBEKANNT;N=%d\n", $zd_aktion, count($zd_ger));
+    printf("Geraet %d ist nicht eingerichtet (eingerichtet: %d) - es wurde nichts gesendet. Reiter Einstellungen.\n",
+        (int) $zd_nr, count($zd_ger));
+    exit;
 }
 
 // Der Trockenlauf sendet nichts und braucht die Freigabe deshalb nicht.
