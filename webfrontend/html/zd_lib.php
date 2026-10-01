@@ -1997,8 +1997,14 @@ function zd_konfig_ausfuhr()
         '_erzeugt' => date('c'),
         '_hinweis' => 'Diese Datei enthaelt das Aktionstoken und, falls eingetragen, '
                     . 'das Broker-Passwort. Bitte wie ein Passwort behandeln.',
-        'konfiguration' => $cfg,
     );
+    /* X-3: Wuerde das Zurueckspielen genau diese Datei abweisen, sagt es der
+     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
+    $warn = zd_rueckspiel_befund($cfg);
+    if ($warn) {
+        $daten['_warnung'] = sprintf(zd_t('EINST.SICH_X3_KOPF'), implode(', ', $warn));
+    }
+    $daten['konfiguration'] = $cfg;
     $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     return $js === false ? '' : $js;
 }
@@ -2009,8 +2015,12 @@ function zd_konfig_ausfuhr()
  * Rueckgabe: array(ok, Meldung). Geprueft wird, BEVOR etwas geschrieben wird -
  * eine halb zurueckgespielte Konfiguration waere schlimmer als gar keine.
  */
-function zd_konfig_einfuhr($inhalt)
+function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
 {
+    /* X-3: $namen sammelt die Namen der abgewiesenen Schluessel (nie Werte);
+     * $nur_pruefen endet nach der Pruefung, ohne etwas zu schreiben. So prueft
+     * zd_rueckspiel_befund() die eigene Sicherung mit DIESER Funktion. */
+    $namen = array();
     /* JEDER Wert wird geprueft, mit den Regeln des Formulars (Befund U4/C3,
      * 29.09.2026, Bauart E). Bis 0.9.27 wurde nur das Vorhandensein von
      * geraete und aktionstoken geprueft und dann array_merge() gespeichert:
@@ -2037,6 +2047,7 @@ function zd_konfig_einfuhr($inhalt)
     foreach (array('geraete', 'aktionstoken') as $k) {
         if (!array_key_exists($k, $neu)) {
             $fehlt[] = "<span class='sm-mono'>" . $k . '</span>';
+            $namen[] = $k;
         }
     }
     if ($fehlt) {
@@ -2052,11 +2063,13 @@ function zd_konfig_einfuhr($inhalt)
         }
         if (!array_key_exists($k, $vorgaben)) {
             $bean[] = sprintf(zd_t('EINST.SICH_FREMD'), zd_e($k));
+            $namen[] = $k;
             continue;
         }
         $grund = zd_sicherung_wert_pruefen($k, $v);
         if ($grund !== '') {
             $bean[] = sprintf(zd_t('EINST.SICH_WERT'), zd_e($k), $grund);
+            $namen[] = $k;
             continue;
         }
         $gut[$k] = $v;
@@ -2068,9 +2081,14 @@ function zd_konfig_einfuhr($inhalt)
     }
     if ((int) $cfg['schutz_soc_min'] >= (int) $cfg['schutz_soc_max']) {
         $bean[] = zd_t('EINST.FEHLER_SOC_REIHE');
+        $namen[] = 'schutz_soc_min';
+        $namen[] = 'schutz_soc_max';
     }
     if ($bean) {
         return array(0, zd_t('EINST.SICH_ABGEWIESEN') . '<br>' . implode('<br>', $bean));
+    }
+    if ($nur_pruefen) {
+        return array(1, '');
     }
     $hinweise = array();
     if (!isset($gut['aktionstoken']) || $gut['aktionstoken'] === '') {
@@ -2093,6 +2111,32 @@ function zd_konfig_einfuhr($inhalt)
     }
     return array(1, sprintf(zd_t('EINST.KONFIG_ZURUECK'), count((array) $cfg['geraete']))
                   . ($hinweise ? ' ' . implode(' ', $hinweise) : ''));
+}
+
+/**
+ * X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen bestehen?
+ *
+ * Geprueft mit derselben zd_konfig_einfuhr() wie das Zurueckspielen, nur
+ * ohne Schreiben - eine zweite Pruefliste waere eine zweite Wahrheit.
+ * Rueckgabe: die Namen der Schluessel, die abgewiesen wuerden (nie Werte);
+ * leer, wenn die Sicherung durchginge.
+ */
+function zd_rueckspiel_befund($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = zd_config();
+    }
+    $js = json_encode(array('konfiguration' => $cfg),
+                      JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return array('konfiguration');
+    }
+    $namen = array();
+    list($ok) = zd_konfig_einfuhr($js, true, $namen);
+    if ($ok) {
+        return array();
+    }
+    return $namen ? array_values(array_unique(array_map('strval', $namen))) : array('konfiguration');
 }
 
 /** Zahlenfelder des Reiters Einstellungen: Feld => array(von, bis). EINE Tabelle fuer Formular und Sicherung. */
@@ -2250,7 +2294,7 @@ function zd_geraet_zeile_pruefen($z)
  * und geloescht, aelter als 120 s verworfen. Aktionstoken und
  * Broker-Passwort werden vorher unkenntlich gemacht (Regeln/04, Nachtrag
  * Raumklima 17.09.). Bauform ak_einmal_*() aus AnkerSolix 0.9.22. */
-function zd_einmal_schreiben(array $meldungen, array $fehler, $test)
+function zd_einmal_schreiben(array $meldungen, array $fehler, $test, $eingaben = null)
 {
     $cfg = zd_config(false);
     $geheim = array();
@@ -2268,6 +2312,9 @@ function zd_einmal_schreiben(array $meldungen, array $fehler, $test)
         'meldungen' => array_map($weg, array_values($meldungen)),
         'fehler'    => array_map($weg, array_values($fehler)),
         'test'      => $weg($test),
+        // X-2: nur nach einer Beanstandung gesetzt, Geheimnisse nie darin
+        // (zd_eingaben_sammeln()).
+        'eingaben'  => is_array($eingaben) ? $eingaben : null,
     ), 0600);
 }
 
@@ -2289,7 +2336,194 @@ function zd_einmal_lesen()
         'meldungen' => $liste(isset($d['meldungen']) ? $d['meldungen'] : null),
         'fehler'    => $liste(isset($d['fehler']) ? $d['fehler'] : null),
         'test'      => isset($d['test']) && is_scalar($d['test']) ? (string) $d['test'] : '',
+        'eingaben'  => isset($d['eingaben']) && is_array($d['eingaben']) ? $d['eingaben'] : null,
     );
+}
+
+/* ---------------- Eingaben nach einer Beanstandung (X-2) ----------------
+ *
+ * Regeln/04 "Nach einer Beanstandung stehen die eingetippten Werte wieder im
+ * Formular" (Hausregel seit 30.09.2026). Seit der Umleitung nach jedem POST
+ * (U1) zeigte der GET danach die gespeicherten Werte: wer sechs Felder
+ * richtig und eines falsch eintrug, tippte alle neu - und seit Entscheidung
+ * 16 wird bei einer Beanstandung gar nichts gespeichert.
+ *
+ * Nur nach einer Beanstandung, nur das eine Formular, nur seine Felder. Nie
+ * Geheimnisse: das Broker-Passwort steht in keiner Liste, und ein Wert, der
+ * das Aktionstoken oder das gespeicherte Broker-Passwort enthaelt, reist
+ * nicht (das Feld zeigt dann den gespeicherten Stand). Bauform wie
+ * ACTiKamera 1.9.25 (cam_eingabe*) und Heimkino 1.3.15 (hk_eingabe*). */
+
+/** Die Felder je Formular: text (ein Wert), liste (je Geraetezeile), haken. */
+function zd_eingabe_felder($form)
+{
+    if ($form === 'settings') {
+        $text = array_keys(zd_grenzen());
+        foreach (array('schutz_temp_min', 'schutz_temp_max', 'temp_umrechnung') as $k) {
+            $text[] = $k;
+        }
+        foreach (array_keys(zd_feldkarte()) as $k) {
+            $text[] = 'z_' . $k;
+        }
+        foreach (array_keys(zd_packkarte()) as $k) {
+            $text[] = 'zp_' . $k;
+        }
+        return array(
+            'text'  => $text,
+            'liste' => array('g_name', 'g_art', 'g_ip', 'g_prodkey', 'g_deviceid', 'g_sn', 'g_modell',
+                             'g_satz', 'g_max_laden', 'g_max_entladen', 'g_quittungsfeld', 'g_kapazitaet'),
+            'haken' => array('steuerung_ein', 'schutz_ein', 'energie_ein'),
+        );
+    }
+    if ($form === 'mqtt') {
+        return array(
+            'text'  => array('broker_host', 'broker_port', 'broker_user', 'mqtt_topic', 'mqtt_auffrischung'),
+            'liste' => array(),
+            'haken' => array('mqtt_ein'),
+        );
+    }
+    return null;
+}
+
+/**
+ * Die eingetippten Werte eines Formulars aus $_POST, fuer die Einmalmeldung.
+ * Ein Wert, der kein gueltiges UTF-8 ist, laenger als 256 Byte oder ein
+ * Geheimnis enthaelt, reist nicht mit (sonst scheiterte json_encode und mit
+ * ihm die Umleitung) - das Feld zeigt dann den gespeicherten Stand.
+ */
+function zd_eingaben_sammeln($form, array $beanstandet)
+{
+    $f = zd_eingabe_felder($form);
+    if ($f === null || !$beanstandet) {
+        return null;
+    }
+    $cfg = zd_config(false);
+    $geheim = array();
+    foreach (array($cfg['aktionstoken'], $cfg['broker_pw']) as $g) {
+        if (is_string($g) && strlen($g) >= 4) {
+            $geheim[] = $g;
+        }
+    }
+    $ok = function ($v) use ($geheim) {
+        if (!is_string($v) || strlen($v) > 256 || preg_match('//u', $v) !== 1) {
+            return false;
+        }
+        foreach ($geheim as $g) {
+            if (strpos($v, $g) !== false) {
+                return false;
+            }
+        }
+        return true;
+    };
+    $werte = array();
+    foreach ($f['text'] as $k) {
+        if (isset($_POST[$k]) && $ok($_POST[$k])) {
+            $werte[$k] = $_POST[$k];
+        }
+    }
+    foreach ($f['liste'] as $k) {
+        if (isset($_POST[$k]) && is_array($_POST[$k])) {
+            $l = array();
+            for ($i = 0; $i < 6; $i++) {
+                $l[] = (isset($_POST[$k][$i]) && $ok($_POST[$k][$i])) ? $_POST[$k][$i] : null;
+            }
+            $werte[$k] = $l;
+        }
+    }
+    foreach ($f['haken'] as $k) {
+        $werte[$k] = isset($_POST[$k]) ? '1' : '';
+    }
+    return array('form' => $form, 'werte' => $werte,
+                 'beanstandet' => array_values(array_unique(array_map('strval', $beanstandet))));
+}
+
+/** Die Eingaben aus der Einmalmeldung annehmen (nur bekannte Felder, nur Text); ohne Argument: der Stand. */
+function zd_eingaben_setzen($roh = null)
+{
+    static $ein = array('form' => '', 'werte' => array(), 'beanstandet' => array());
+    if ($roh === null) {
+        return $ein;
+    }
+    if (!is_array($roh) || !isset($roh['form']) || !is_string($roh['form'])) {
+        return $ein;
+    }
+    $f = zd_eingabe_felder($roh['form']);
+    if ($f === null) {
+        return $ein;
+    }
+    $w = isset($roh['werte']) && is_array($roh['werte']) ? $roh['werte'] : array();
+    $werte = array();
+    foreach (array_merge($f['text'], $f['haken']) as $k) {
+        if (isset($w[$k]) && is_string($w[$k])) {
+            $werte[$k] = $w[$k];
+        }
+    }
+    foreach ($f['liste'] as $k) {
+        if (isset($w[$k]) && is_array($w[$k])) {
+            $l = array();
+            for ($i = 0; $i < 6; $i++) {
+                $l[$i] = (isset($w[$k][$i]) && is_string($w[$k][$i])) ? $w[$k][$i] : null;
+            }
+            $werte[$k] = $l;
+        }
+    }
+    $bean = array();
+    if (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) {
+        foreach ($roh['beanstandet'] as $b) {
+            if (is_string($b) && preg_match('/^[A-Za-z_]{1,40}(#[0-5])?\z/', $b)) {
+                $bean[] = $b;
+            }
+        }
+    }
+    if ($bean) {
+        $ein = array('form' => $roh['form'], 'werte' => $werte, 'beanstandet' => $bean);
+    }
+    return $ein;
+}
+
+/** Wert eines Textfelds oder Hakens ('1'/''): die Eingabe nach einer Beanstandung, sonst der gespeicherte. */
+function zd_eingabe($form, $feld, $gespeichert)
+{
+    $ein = zd_eingaben_setzen();
+    if ($ein['form'] === $form && array_key_exists($feld, $ein['werte']) && is_string($ein['werte'][$feld])) {
+        return $ein['werte'][$feld];
+    }
+    return $gespeichert;
+}
+
+/** Wert eines Felds der Geraetetabelle (Zeile $i), nur im Formular Einstellungen. */
+function zd_eingabe_zeile($feld, $i, $gespeichert)
+{
+    $ein = zd_eingaben_setzen();
+    if ($ein['form'] === 'settings' && isset($ein['werte'][$feld]) && is_array($ein['werte'][$feld])
+        && isset($ein['werte'][$feld][$i]) && is_string($ein['werte'][$feld][$i])) {
+        return $ein['werte'][$feld][$i];
+    }
+    return $gespeichert;
+}
+
+/** Die gespeicherten Werte eines Formulars mit den Eingaben ueberlagern (nur Schluessel der Konfiguration). */
+function zd_eingaben_ueberlagern(array $cfg, $form)
+{
+    $ein = zd_eingaben_setzen();
+    if ($ein['form'] !== $form) {
+        return $cfg;
+    }
+    $f = zd_eingabe_felder($form);
+    foreach (array_merge($f['text'], $f['haken']) as $k) {
+        if (array_key_exists($k, $cfg) && isset($ein['werte'][$k]) && is_string($ein['werte'][$k])) {
+            $cfg[$k] = $ein['werte'][$k];
+        }
+    }
+    return $cfg;
+}
+
+/** Das Merkmal am beanstandeten Feld: rot umrandet und fuer Vorleseprogramme markiert. */
+function zd_markierung($feld)
+{
+    $ein = zd_eingaben_setzen();
+    return in_array((string) $feld, $ein['beanstandet'], true)
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 }
 
 /**

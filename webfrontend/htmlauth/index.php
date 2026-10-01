@@ -79,6 +79,8 @@ if (isset($_POST['activetab']) && preg_match($zd_muster, (string) $_POST['active
 $zd_meldungen = array();
 $zd_fehler = array();      // gesammelt, nicht ueberschrieben
 $zd_testausgabe = '';
+// X-2: die eingetippten Werte des beanstandeten Formulars (sonst null).
+$zd_eingaben = null;
 $zd_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 // Jeder POST endet mit 303, auch einer mit ungueltigem Merkmal (U1).
 $zd_post_roh = $zd_post;
@@ -138,6 +140,7 @@ if (!$zd_post_roh) {
         $zd_meldungen = $zd_einmal['meldungen'];
         $zd_fehler = array_merge($zd_fehler, $zd_einmal['fehler']);
         $zd_testausgabe = $zd_einmal['test'];
+        zd_eingaben_setzen($zd_einmal['eingaben']);     // X-2
     }
 }
 
@@ -351,6 +354,8 @@ if ($zd_post && isset($_POST['uebernehmen'])) {
 /* ---------------- Einstellungen speichern ---------------- */
 if ($zd_post && isset($_POST['speichern'])) {
     $zd_cfg = zd_config();
+    $zd_n0 = count($zd_fehler);   // Entscheidung 16 (Einstellungen)
+    $zd_bean = array();           // X-2: beanstandete Felder
     $zd_saetze = zd_befehlssaetze();
     $zd_modelle = zd_modelle();
 
@@ -366,12 +371,19 @@ if ($zd_post && isset($_POST['speichern'])) {
      *
      * Uebergangen heisst hier: die BISHERIGE Angabe derselben Zeile bleibt
      * stehen. Sie einfach wegzulassen waere schlimmer als das alte Verhalten -
-     * dann loeschte ein Tippfehler das Geraet. */
+     * dann loeschte ein Tippfehler das Geraet.
+     *
+     * Seit Entscheidung 16 (30.09.2026) wird bei einer Beanstandung gar
+     * nichts gespeichert (unten); das Uebergehen bestimmt nur noch, welche
+     * Zeile gemeldet wird. */
     $zd_alt_zeilen = isset($zd_cfg['geraete']) && is_array($zd_cfg['geraete'])
                    ? array_values($zd_cfg['geraete']) : array();
     $zd_neu = array();
     /* Meldet eine Zeile ab und rettet, was dort bisher stand. */
-    $zd_zeile_ab = function ($i, $meldung) use (&$zd_neu, &$zd_fehler, $zd_alt_zeilen) {
+    $zd_zeile_ab = function ($i, $meldung, $felder = array()) use (&$zd_neu, &$zd_fehler, &$zd_bean, $zd_alt_zeilen) {
+        foreach ($felder as $zd_bf) {
+            $zd_bean[] = $zd_bf . '#' . $i;     // X-2
+        }
         if (isset($zd_alt_zeilen[$i]) && is_array($zd_alt_zeilen[$i])) {
             $zd_neu[$i] = $zd_alt_zeilen[$i];
             $zd_fehler[] = $meldung . ' ' . zd_t('EINST.FEHLER_ZEILE_ALT');
@@ -399,28 +411,28 @@ if ($zd_post && isset($_POST['speichern'])) {
          * Miniserver. Ein Semikolon oder Gleichheitszeichen darin schiebt
          * dort die Felder - abweisen, nicht stillschweigend zurechtbiegen. */
         if ($name !== '' && preg_match('/[;=]/', $name)) {
-            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_NAME'), $i + 1));
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_NAME'), $i + 1), array('g_name'));
             continue;
         }
         if ($art === 'http') {
             if ($ip === '') {
-                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_IP_FEHLT'), $i + 1));
+                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_IP_FEHLT'), $i + 1), array('g_ip'));
                 continue;
             }
             // IPv4 oder Hostname zulassen - beides ist gebraeuchlich.
             if (!preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $ip)
                 && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{1,80}$/', $ip)) {
-                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_IP'), $i + 1));
+                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_IP'), $i + 1), array('g_ip'));
                 continue;
             }
         } else {
             if ($prodkey === '' || $deviceid === '') {
-                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_MQTT_IDS'), $i + 1));
+                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_MQTT_IDS'), $i + 1), array('g_prodkey', 'g_deviceid'));
                 continue;
             }
             if (!preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $prodkey)
                 || !preg_match('/^[A-Za-z0-9_\-]{1,64}$/', $deviceid)) {
-                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_MQTT_MUSTER'), $i + 1));
+                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_MQTT_MUSTER'), $i + 1), array('g_prodkey', 'g_deviceid'));
                 continue;
             }
         }
@@ -445,7 +457,7 @@ if ($zd_post && isset($_POST['speichern'])) {
             // Eingabe in Kilowattstunden, Ablage in Wattstunden: gerechnet
             // wird mit Wattstunden, eingetragen wird, was auf dem Geraet steht.
             if (!preg_match('/^[0-9]{1,3}([.,][0-9]{1,3})?$/', $zd_kap)) {
-                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_KAPAZITAET'), $i + 1));
+                $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_KAPAZITAET'), $i + 1), array('g_kapazitaet'));
                 continue;
             }
             $zd_zeile['kapazitaet_wh'] = (int) round(1000 * (float) str_replace(',', '.', $zd_kap));
@@ -453,7 +465,7 @@ if ($zd_post && isset($_POST['speichern'])) {
         // Ein Eigenschaftsname, kein Freitext - abweisen, nicht zurechtbiegen.
         if ($zd_zeile['quittungsfeld'] !== ''
             && !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $zd_zeile['quittungsfeld'])) {
-            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_QUITTUNGSFELD'), $i + 1));
+            $zd_zeile_ab($i, sprintf(zd_t('EINST.FEHLER_QUITTUNGSFELD'), $i + 1), array('g_quittungsfeld'));
             continue;
         }
         foreach (array('max_laden', 'max_entladen') as $feld) {
@@ -465,12 +477,14 @@ if ($zd_post && isset($_POST['speichern'])) {
                 // Nur diese eine Grenze verwerfen, nicht die ganze Zeile:
                 // ohne Eintrag gilt die Werksgrenze des Modells.
                 $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_GRENZE'), $i + 1);
+                $zd_bean[] = 'g_' . $feld . '#' . $i;
                 continue;
             }
             // Beanstanden statt still kappen (U12): bis 0.9.27 wurde 9999
             // gespeichert und wirkte still als 5000.
             if ((int) $w > 5000) {
                 $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_GRENZE_MAX'), $i + 1, 5000);
+                $zd_bean[] = 'g_' . $feld . '#' . $i;
                 continue;
             }
             $zd_zeile[$feld] = (int) $w;
@@ -488,12 +502,14 @@ if ($zd_post && isset($_POST['speichern'])) {
         $zd_wert = isset($_POST[$zd_feld]) ? trim((string) $_POST[$zd_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $zd_wert)) {
             $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZAHL'), zd_t('EINST.L_' . strtoupper($zd_feld)));
+            $zd_bean[] = $zd_feld;
             continue;
         }
         $zd_zahl = (int) $zd_wert;
         if ($zd_zahl < $zd_grenzen[0] || $zd_zahl > $zd_grenzen[1]) {
             $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_BEREICH'),
                 zd_t('EINST.L_' . strtoupper($zd_feld)), $zd_grenzen[0], $zd_grenzen[1]);
+            $zd_bean[] = $zd_feld;
             continue;
         }
         $zd_cfg[$zd_feld] = $zd_zahl;
@@ -508,12 +524,15 @@ if ($zd_post && isset($_POST['speichern'])) {
         $zd_tw = isset($_POST[$zd_tf]) ? trim((string) $_POST[$zd_tf]) : '';
         if (!preg_match('/^-?[0-9]{1,6}([.,][0-9]{1,2})?$/', $zd_tw)) {
             $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZAHL'), zd_t('EINST.L_' . strtoupper($zd_tf)));
+            $zd_bean[] = $zd_tf;
             continue;
         }
         $zd_cfg[$zd_tf] = (float) str_replace(',', '.', $zd_tw);
     }
     if ((int) $zd_cfg['schutz_soc_min'] >= (int) $zd_cfg['schutz_soc_max']) {
         $zd_fehler[] = zd_t('EINST.FEHLER_SOC_REIHE');
+        $zd_bean[] = 'schutz_soc_min';
+        $zd_bean[] = 'schutz_soc_max';
     }
 
 
@@ -543,6 +562,7 @@ if ($zd_post && isset($_POST['speichern'])) {
             }
             if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $zd_w)) {
                 $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_ZUORDNUNG'), zd_e($zd_feld));
+                $zd_bean[] = $zd_praefix . $zd_feld;
                 continue;
             }
             $zd_neuz[$zd_feld] = $zd_w;
@@ -550,10 +570,16 @@ if ($zd_post && isset($_POST['speichern'])) {
         $zd_cfg[$zd_schluessel] = $zd_neuz;
     }
 
-    /* Gespeichert wird IMMER. Was beanstandet wurde, ist oben uebergangen
-     * worden und steht in $zd_fehler - der Bediener sieht die Meldung UND
-     * behaelt alles, was in Ordnung war. */
-    if (zd_config_speichern($zd_cfg)) {
+    /* Bei einer Beanstandung wird NICHTS gespeichert, auch nicht das
+     * Uebrige (Entscheidung 16 vom 30.09.2026, Regeln/04). Bis 0.9.29 galt
+     * "Gespeichert wird IMMER": ein Tippfehler in einer Zeile speicherte die
+     * anderen Felder trotzdem, und die Meldung "Gespeichert - bis auf ..."
+     * war leicht zu ueberlesen. Die eingetippten Werte kommen mit der
+     * Einmalmeldung ins Formular zurueck (X-2). */
+    if (count($zd_fehler) > $zd_n0) {
+        $zd_fehler[] = zd_t('EINST.NICHTS_GESPEICHERT');
+        $zd_eingaben = zd_eingaben_sammeln('settings', $zd_bean);   // X-2
+    } elseif (zd_config_speichern($zd_cfg)) {
         $zd_meldungen[] = $zd_fehler ? zd_t('EINST.GESPEICHERT_TEILWEISE') : zd_t('EINST.GESPEICHERT');
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_SPEICHERN'), $zd_p['config']);
@@ -569,6 +595,8 @@ if ($zd_post && isset($_POST['speichern'])) {
  * Werte, die er nie gesehen hat. */
 if ($zd_post && isset($_POST['save_mqtt'])) {
     $zd_mcfg = zd_config();
+    $zd_n0 = count($zd_fehler);   // Entscheidung 16 (MQTT)
+    $zd_bean = array();           // X-2: beanstandete Felder
     // Der Stand VOR dem Speichern - fuer das Leeren unter dem alten Praefix (M5/M6).
     $zd_alt_ein = !empty($zd_mcfg['mqtt_ein']);
     $zd_alt_pr = trim((string) $zd_mcfg['mqtt_topic'], '/');
@@ -582,6 +610,7 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
                ? trim($_POST['mqtt_topic']) : '';
     if (!zd_topic_gueltig($zd_mtopic)) {
         $zd_fehler[] = zd_t('EINST.FEHLER_TOPIC');
+        $zd_bean[] = 'mqtt_topic';
     } else {
         $zd_mcfg['mqtt_topic'] = $zd_mtopic;
     }
@@ -591,10 +620,12 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_BEREICH'),
             zd_t('EINST.L_BROKER_PORT'), 1, 65535);
+        $zd_bean[] = 'broker_port';
     }
     $zd_bh = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_host']) ? $_POST['broker_host'] : '')));
     if ($zd_bh !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $zd_bh)) {
         $zd_fehler[] = zd_t('EINST.FEHLER_BROKER');
+        $zd_bean[] = 'broker_host';
     } else {
         $zd_mcfg['broker_host'] = $zd_bh;
     }
@@ -605,6 +636,7 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_BEREICH'),
             zd_t('EINST.L_MQTT_AUFFR'), 0, 3600);
+        $zd_bean[] = 'mqtt_auffrischung';
     }
     $zd_mcfg['broker_user'] = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) (isset($_POST['broker_user']) ? $_POST['broker_user'] : '')));
     // Leeres Passwortfeld loescht nichts - sonst stuende irgendwann ein leeres
@@ -616,21 +648,35 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
     $zd_bpw_weg = !empty($_POST['broker_pw_loeschen']);
     if ($zd_bpw_weg && $zd_bpw !== '') {
         $zd_fehler[] = zd_t('EINST.FEHLER_PW_WIDERSPRUCH');
+        $zd_bean[] = 'broker_pw';
+        $zd_bean[] = 'broker_pw_loeschen';
     } elseif ($zd_bpw_weg) {
         $zd_mcfg['broker_pw'] = '';
     } elseif ($zd_bpw !== '') {
         $zd_mcfg['broker_pw'] = $zd_bpw;
     }
-    /* Auch hier gilt: jeder beanstandete Wert wurde oben uebergangen, also
-     * behaelt er seinen bisherigen Stand - alles Uebrige wird gespeichert.
-     * Bis 0.9.8 nahm ein leeres Port-Feld Themen-Praefix, Haken und
-     * Broker-Passwort mit weg.
+    /* Bei einer Beanstandung wird NICHTS gespeichert (Entscheidung 16 vom
+     * 30.09.2026): bis 0.9.29 wurde alles Uebrige gespeichert - auch ein
+     * neues Praefix samt Leeren der Themen unter dem alten, waehrend der
+     * Port beanstandet war. Nichts gespeichert heisst hier auch: nichts
+     * geleert, keine Abo-Datei geschrieben. Die eingetippten Werte kommen
+     * zurueck (X-2), das Broker-Passwort nie. (Bis 0.9.8 nahm ein leeres
+     * Port-Feld Themen-Praefix, Haken und Broker-Passwort mit weg.)
      *
      * Und ein misslungenes Schreiben wird gemeldet: bis 0.9.8 fehlte hier der
      * else-Zweig, den das Einstellungsformular hat. Der Bediener drueckte
      * Speichern, die Seite lud neu, alles sah aus wie vorher - und das
      * Broker-Passwort war still verloren. */
-    if (zd_config_speichern($zd_mcfg)) {
+    if (count($zd_fehler) > $zd_n0) {
+        $zd_fehler[] = zd_t('EINST.NICHTS_GESPEICHERT');
+        /* Ein neu eingetipptes Broker-Passwort kommt nie zurueck (X-2):
+         * markiert und genannt, damit niemand glaubt, es stuende noch da. */
+        if ($zd_bpw !== '') {
+            $zd_fehler[] = zd_t('EINST.EINGABEN_PW_NEU');
+            $zd_bean[] = 'broker_pw';
+        }
+        $zd_eingaben = zd_eingaben_sammeln('mqtt', $zd_bean);   // X-2
+    } elseif (zd_config_speichern($zd_mcfg)) {
         $zd_meldungen[] = $zd_fehler ? zd_t('EINST.GESPEICHERT_TEILWEISE') : zd_t('EINST.GESPEICHERT');
         $zd_neu_ein = !empty($zd_mcfg['mqtt_ein']);
         $zd_neu_pr = trim((string) $zd_mcfg['mqtt_topic'], '/');
@@ -763,7 +809,10 @@ if ($zd_post && isset($_POST['temp_uebernehmen'])) {
  * Beanstandungen und die Ausgabe des Selbsttests reisen als Einmalmeldung.
  * Die Downloads sind oben schon mit exit hinaus. Scheitert das Schreiben der
  * Einmalmeldung, wird wie bisher direkt gezeigt. */
-if ($zd_post_roh && zd_einmal_schreiben($zd_meldungen, $zd_fehler, $zd_testausgabe)) {
+if ($zd_eingaben) {
+    zd_eingaben_setzen($zd_eingaben);   // falls die Einmalmeldung scheitert und direkt gezeigt wird
+}
+if ($zd_post_roh && zd_einmal_schreiben($zd_meldungen, $zd_fehler, $zd_testausgabe, $zd_eingaben)) {
     header('Location: index.php?form=' . rawurlencode(substr($zd_tab, 4)), true, 303);
     exit;
 }
@@ -783,11 +832,32 @@ $zd_alter = zd_alter();
 $zd_pid = zd_dienst_pid();
 $zd_mqtt = zd_mqtt_zustand();
 $zd_gw = zd_gateway_fassung();
-/* Welcher der drei Warntexte gilt? Die Abo-Seite gibt es nur unter V1;
+/* Welcher der vier Saetze gilt? Die Abo-Seite gibt es nur unter V1;
  * unter V2 leitet das Gateway von sich aus weiter. Ist keine Fassung
- * auffindbar, wird NICHTS behauptet - beide Faelle werden genannt. */
-$zd_abo_schl = !$zd_gw['gefunden'] ? 'ABO_WARNUNG_UNBEKANNT'
-             : ($zd_gw['fassung'] >= 2 ? 'ABO_WARNUNG_V2' : 'ABO_WARNUNG_V1');
+ * auffindbar, wird NICHTS behauptet - beide Faelle werden genannt.
+ *
+ * Die Abo-Datei zaehlt mit (Zendure-b1, X-6, Vorbild ACTiKamera 1.9.25):
+ * seit 0.9.28 schreibt das Plugin mqtt_subscriptions.cfg (M9), und das
+ * Gateway abonniert daraus selbst (Regeln/07). Bis 0.9.29 stand unter V1
+ * trotzdem immer der Satz, das Abo gehoere von Hand unter Subscriptions -
+ * auch wenn die Datei es schon trug. Rot ist er jetzt nur noch, wenn die
+ * Datei fehlt oder ein anderes Praefix traegt; gefragt wird mit
+ * zd_abo_datei(), derselben Funktion, die die Datei schreibt. */
+$zd_abo_pr = trim((string) $zd_cfg['mqtt_topic'], '/');
+list($zd_abo_pfad, $zd_abo_da) = zd_abo_datei($zd_abo_pr === '' ? 'zendure' : $zd_abo_pr, false);
+if ($zd_gw['gefunden'] && $zd_gw['fassung'] >= 2) {
+    $zd_abo_schl = 'ABO_WARNUNG_V2';
+    $zd_abo_kl = 'sm-hinweis';
+} elseif ($zd_abo_da) {
+    $zd_abo_schl = 'ABO_DATEI';
+    $zd_abo_kl = 'sm-hinweis';
+} elseif ($zd_gw['gefunden']) {
+    $zd_abo_schl = 'ABO_WARNUNG_V1';
+    $zd_abo_kl = 'sm-fehler';
+} else {
+    $zd_abo_schl = 'ABO_WARNUNG_UNBEKANNT';
+    $zd_abo_kl = 'sm-warnung';
+}
 $zd_host = zd_host();
 $zd_basis = 'http://' . $zd_host . '/plugins/' . $zd_p['plugin'] . '/index.php';
 // Nur das Ende lesen, nicht die ganze Datei - siehe zd_log_ende().
@@ -878,6 +948,8 @@ if ($zd_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-fehler { border: 1px solid #ef9a9a; background: #ffebee; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Eigene Zutat (X-2, 01.10.2026): das beanstandete Feld nach der Rueckreise der Eingaben. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
@@ -1032,6 +1104,10 @@ $zd_vtag = (isset($_GET['tag']) && preg_match('/^[0-9]{8}$/', (string) $_GET['ta
   </form>
 </div>
 
+<?php /* X-2: nach einer Beanstandung zeigt NUR dieses Formular die
+         eingetippten Werte; nach </form> gilt wieder der gespeicherte Stand. */
+$zd_cfg_gespeichert = $zd_cfg;
+$zd_cfg = zd_eingaben_ueberlagern($zd_cfg, 'settings'); ?>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
@@ -1057,18 +1133,20 @@ $zd_vtag = (isset($_GET['tag']) && preg_match('/^[0-9]{8}$/', (string) $_GET['ta
 $zd_roh = isset($zd_cfg['geraete']) && is_array($zd_cfg['geraete']) ? $zd_cfg['geraete'] : array();
 for ($zd_i = 0; $zd_i < 6; $zd_i++) {
     $zd_z = isset($zd_roh[$zd_i]) && is_array($zd_roh[$zd_i]) ? $zd_roh[$zd_i] : array();
-    $zd_v = function ($k) use ($zd_z) { return isset($zd_z[$k]) ? (string) $zd_z[$k] : ''; };
+    $zd_v = function ($k) use ($zd_z, $zd_i) {
+        return zd_eingabe_zeile('g_' . $k, $zd_i, isset($zd_z[$k]) ? (string) $zd_z[$k] : '');
+    };
 ?>
 <tr>
 <td><?= $zd_i + 1 ?></td>
-<td><input data-role="none" type="text" name="g_name[]" value="<?= zd_e($zd_v('name')) ?>" size="12"></td>
+<td><input data-role="none" type="text" name="g_name[]"<?= zd_markierung('g_name#' . $zd_i) ?> value="<?= zd_e($zd_v('name')) ?>" size="12"></td>
 <td><select data-role="none" name="g_art[]">
     <option value="http"<?= $zd_v('art') !== 'mqtt' ? ' selected' : '' ?>>HTTP</option>
     <option value="mqtt"<?= $zd_v('art') === 'mqtt' ? ' selected' : '' ?>>MQTT</option>
 </select></td>
-<td><input data-role="none" type="text" name="g_ip[]" value="<?= zd_e($zd_v('ip')) ?>" size="14" placeholder="<?= $zd_i === 0 ? '192.168.1.50' : '' ?>"></td>
-<td><input data-role="none" type="text" name="g_prodkey[]" value="<?= zd_e($zd_v('prodkey')) ?>" size="12"></td>
-<td><input data-role="none" type="text" name="g_deviceid[]" value="<?= zd_e($zd_v('deviceid')) ?>" size="12"></td>
+<td><input data-role="none" type="text" name="g_ip[]"<?= zd_markierung('g_ip#' . $zd_i) ?> value="<?= zd_e($zd_v('ip')) ?>" size="14" placeholder="<?= $zd_i === 0 ? '192.168.1.50' : '' ?>"></td>
+<td><input data-role="none" type="text" name="g_prodkey[]"<?= zd_markierung('g_prodkey#' . $zd_i) ?> value="<?= zd_e($zd_v('prodkey')) ?>" size="12"></td>
+<td><input data-role="none" type="text" name="g_deviceid[]"<?= zd_markierung('g_deviceid#' . $zd_i) ?> value="<?= zd_e($zd_v('deviceid')) ?>" size="12"></td>
 <td><input data-role="none" type="text" name="g_sn[]" value="<?= zd_e($zd_v('sn')) ?>" size="12"></td>
 <td><select data-role="none" name="g_modell[]">
     <option value=""><?= zd_e(zd_t('EINST.MODELL_FREI')) ?></option>
@@ -1082,10 +1160,10 @@ for ($zd_i = 0; $zd_i < 6; $zd_i++) {
     <option value="<?= zd_e($zd_s) ?>"<?= $zd_v('satz') === $zd_s ? ' selected' : '' ?>><?= zd_e($zd_s) ?></option>
 <?php } ?>
 </select></td>
-<td><input data-role="none" type="text" name="g_max_laden[]" value="<?= zd_e($zd_v('max_laden')) ?>" size="4"></td>
-<td><input data-role="none" type="text" name="g_max_entladen[]" value="<?= zd_e($zd_v('max_entladen')) ?>" size="4"></td>
-<td><input data-role="none" type="text" name="g_quittungsfeld[]" value="<?= zd_e($zd_v('quittungsfeld')) ?>" size="12" placeholder="outputLimit"></td>
-<td><input data-role="none" type="text" name="g_kapazitaet[]" value="<?= $zd_v('kapazitaet_wh') !== '' ? zd_e(rtrim(rtrim(number_format((float) $zd_v('kapazitaet_wh') / 1000, 3, '.', ''), '0'), '.')) : '' ?>" size="6" placeholder="1.92"></td>
+<td><input data-role="none" type="text" name="g_max_laden[]"<?= zd_markierung('g_max_laden#' . $zd_i) ?> value="<?= zd_e($zd_v('max_laden')) ?>" size="4"></td>
+<td><input data-role="none" type="text" name="g_max_entladen[]"<?= zd_markierung('g_max_entladen#' . $zd_i) ?> value="<?= zd_e($zd_v('max_entladen')) ?>" size="4"></td>
+<td><input data-role="none" type="text" name="g_quittungsfeld[]"<?= zd_markierung('g_quittungsfeld#' . $zd_i) ?> value="<?= zd_e($zd_v('quittungsfeld')) ?>" size="12" placeholder="outputLimit"></td>
+<td><input data-role="none" type="text" name="g_kapazitaet[]"<?= zd_markierung('g_kapazitaet#' . $zd_i) ?> value="<?= zd_e(zd_eingabe_zeile('g_kapazitaet', $zd_i, $zd_v('kapazitaet_wh') !== '' ? rtrim(rtrim(number_format((float) $zd_v('kapazitaet_wh') / 1000, 3, '.', ''), '0'), '.') : '')) ?>" size="6" placeholder="1.92"></td>
 </tr>
 <?php } ?>
 </table>
@@ -1135,8 +1213,8 @@ foreach (array(
 ?>
 <tr><td><span class="sm-mono"><?= zd_e($zd_feld) ?></span></td>
     <td><span class="sm-mono"><?= zd_e($zd_vorgabe) ?></span></td>
-    <td><input data-role="none" type="text" name="<?= zd_e($zd_praefix . $zd_feld) ?>"
-               value="<?= zd_e($zd_eigen) ?>" size="18" placeholder="<?= zd_e($zd_vorgabe) ?>"></td>
+    <td><input data-role="none" type="text" name="<?= zd_e($zd_praefix . $zd_feld) ?>"<?= zd_markierung($zd_praefix . $zd_feld) ?>
+               value="<?= zd_e(zd_eingabe('settings', $zd_praefix . $zd_feld, $zd_eigen)) ?>" size="18" placeholder="<?= zd_e($zd_vorgabe) ?>"></td>
     <td><?= $zd_da ? '<span class="sm-mono">' . zd_e((string) $zd_rohwerte[$zd_gilt_name]) . '</span>'
                    : ($zd_rohwerte ? '<span class="sm-aus">' . zd_e(zd_t('EINST.ZUORD_FEHLT')) . '</span>'
                                    : '&ndash;') ?></td></tr>
@@ -1162,16 +1240,16 @@ foreach (array(
 <h2><?= zd_e(zd_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-feld">
   <label for="intervall"><?= zd_e(zd_t('EINST.L_INTERVALL')) ?></label>
-  <input data-role="none" type="number" id="intervall" name="intervall" value="<?= (int) $zd_cfg['intervall'] ?>" min="5" max="900">
+  <input data-role="none" type="number" id="intervall" name="intervall"<?= zd_markierung('intervall') ?> value="<?= zd_e((string) $zd_cfg['intervall']) ?>" min="5" max="900">
   <div class="sm-hilfe"><?= zd_t('EINST.H_INTERVALL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="verlauf_tage"><?= zd_e(zd_t('EINST.L_VERLAUF_TAGE')) ?></label>
-  <input data-role="none" type="number" id="verlauf_tage" name="verlauf_tage" value="<?= (int) $zd_cfg['verlauf_tage'] ?>" min="1" max="90">
+  <input data-role="none" type="number" id="verlauf_tage" name="verlauf_tage"<?= zd_markierung('verlauf_tage') ?> value="<?= zd_e((string) $zd_cfg['verlauf_tage']) ?>" min="1" max="90">
 </div>
 <div class="sm-feld">
   <label for="temp_umrechnung"><?= zd_e(zd_t('EINST.L_TEMP')) ?></label>
-  <select data-role="none" id="temp_umrechnung" name="temp_umrechnung">
+  <select data-role="none" id="temp_umrechnung" name="temp_umrechnung"<?= zd_markierung('temp_umrechnung') ?>>
 <?php foreach (array('roh', 'kelvin10', 'zehntel') as $zd_tu) { ?>
     <option value="<?= $zd_tu ?>"<?= $zd_cfg['temp_umrechnung'] === $zd_tu ? ' selected' : '' ?>><?= zd_e(zd_t('EINST.TEMP_' . strtoupper($zd_tu))) ?></option>
 <?php } ?>
@@ -1189,22 +1267,22 @@ foreach (array(
 </div>
 <div class="sm-feld">
   <label for="schreibbremse"><?= zd_e(zd_t('EINST.L_SCHREIBBREMSE')) ?></label>
-  <input data-role="none" type="number" id="schreibbremse" name="schreibbremse" value="<?= (int) $zd_cfg['schreibbremse'] ?>" min="0" max="600">
+  <input data-role="none" type="number" id="schreibbremse" name="schreibbremse"<?= zd_markierung('schreibbremse') ?> value="<?= zd_e((string) $zd_cfg['schreibbremse']) ?>" min="0" max="600">
   <div class="sm-hilfe"><?= zd_t('EINST.H_SCHREIBBREMSE') ?></div>
 </div>
 <div class="sm-feld">
   <label for="schrittweite"><?= zd_e(zd_t('EINST.L_SCHRITTWEITE')) ?></label>
-  <input data-role="none" type="number" id="schrittweite" name="schrittweite" value="<?= (int) $zd_cfg['schrittweite'] ?>" min="1" max="500">
+  <input data-role="none" type="number" id="schrittweite" name="schrittweite"<?= zd_markierung('schrittweite') ?> value="<?= zd_e((string) $zd_cfg['schrittweite']) ?>" min="1" max="500">
   <div class="sm-hilfe"><?= zd_t('EINST.H_SCHRITTWEITE') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= zd_e(zd_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $zd_cfg['wartezeit'] ?>" min="0" max="20">
+  <input data-role="none" type="number" id="wartezeit" name="wartezeit"<?= zd_markierung('wartezeit') ?> value="<?= zd_e((string) $zd_cfg['wartezeit']) ?>" min="0" max="20">
   <div class="sm-hilfe"><?= zd_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="quittung_nachlauf"><?= zd_e(zd_t('EINST.L_QUITTUNG_NACHLAUF')) ?></label>
-  <input data-role="none" type="number" id="quittung_nachlauf" name="quittung_nachlauf" value="<?= (int) $zd_cfg['quittung_nachlauf'] ?>" min="0" max="900">
+  <input data-role="none" type="number" id="quittung_nachlauf" name="quittung_nachlauf"<?= zd_markierung('quittung_nachlauf') ?> value="<?= zd_e((string) $zd_cfg['quittung_nachlauf']) ?>" min="0" max="900">
   <div class="sm-hilfe"><?= zd_t('EINST.H_QUITTUNG_NACHLAUF') ?></div>
 </div>
 
@@ -1212,12 +1290,12 @@ foreach (array(
 <div class="sm-hinweis"><?= zd_t('EINST.WIEDERHOLUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="totband_w"><?= zd_e(zd_t('EINST.L_TOTBAND_W')) ?></label>
-  <input data-role="none" type="number" id="totband_w" name="totband_w" value="<?= (int) $zd_cfg['totband_w'] ?>" min="0" max="5000">
+  <input data-role="none" type="number" id="totband_w" name="totband_w"<?= zd_markierung('totband_w') ?> value="<?= zd_e((string) $zd_cfg['totband_w']) ?>" min="0" max="5000">
   <div class="sm-hilfe"><?= zd_t('EINST.H_TOTBAND_W') ?></div>
 </div>
 <div class="sm-feld">
   <label for="totband_auffrischung"><?= zd_e(zd_t('EINST.L_TOTBAND_AUFFR')) ?></label>
-  <input data-role="none" type="number" id="totband_auffrischung" name="totband_auffrischung" value="<?= (int) $zd_cfg['totband_auffrischung'] ?>" min="0" max="86400">
+  <input data-role="none" type="number" id="totband_auffrischung" name="totband_auffrischung"<?= zd_markierung('totband_auffrischung') ?> value="<?= zd_e((string) $zd_cfg['totband_auffrischung']) ?>" min="0" max="86400">
   <div class="sm-hilfe"><?= zd_t('EINST.H_TOTBAND_AUFFR') ?></div>
 </div>
 
@@ -1225,12 +1303,12 @@ foreach (array(
 <div class="sm-warnung"><?= zd_t('EINST.RUECKFALL_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="rueckfall_min"><?= zd_e(zd_t('EINST.L_RUECKFALL_MIN')) ?></label>
-  <input data-role="none" type="number" id="rueckfall_min" name="rueckfall_min" value="<?= (int) $zd_cfg['rueckfall_min'] ?>" min="0" max="1440">
+  <input data-role="none" type="number" id="rueckfall_min" name="rueckfall_min"<?= zd_markierung('rueckfall_min') ?> value="<?= zd_e((string) $zd_cfg['rueckfall_min']) ?>" min="0" max="1440">
   <div class="sm-hilfe"><?= zd_t('EINST.H_RUECKFALL_MIN') ?></div>
 </div>
 <div class="sm-feld">
   <label for="befehl_verfall_s"><?= zd_e(zd_t('EINST.L_VERFALL')) ?></label>
-  <input data-role="none" type="number" id="befehl_verfall_s" name="befehl_verfall_s" value="<?= (int) $zd_cfg['befehl_verfall_s'] ?>" min="0" max="86400">
+  <input data-role="none" type="number" id="befehl_verfall_s" name="befehl_verfall_s"<?= zd_markierung('befehl_verfall_s') ?> value="<?= zd_e((string) $zd_cfg['befehl_verfall_s']) ?>" min="0" max="86400">
   <div class="sm-hilfe"><?= zd_t('EINST.H_VERFALL') ?></div>
 </div>
 
@@ -1244,19 +1322,19 @@ foreach (array(
 </div>
 <div class="sm-feld">
   <label for="schutz_soc_min"><?= zd_e(zd_t('EINST.L_SCHUTZ_SOC_MIN')) ?></label>
-  <input data-role="none" type="number" id="schutz_soc_min" name="schutz_soc_min" value="<?= (int) $zd_cfg['schutz_soc_min'] ?>" min="0" max="100">
+  <input data-role="none" type="number" id="schutz_soc_min" name="schutz_soc_min"<?= zd_markierung('schutz_soc_min') ?> value="<?= zd_e((string) $zd_cfg['schutz_soc_min']) ?>" min="0" max="100">
 </div>
 <div class="sm-feld">
   <label for="schutz_soc_max"><?= zd_e(zd_t('EINST.L_SCHUTZ_SOC_MAX')) ?></label>
-  <input data-role="none" type="number" id="schutz_soc_max" name="schutz_soc_max" value="<?= (int) $zd_cfg['schutz_soc_max'] ?>" min="0" max="100">
+  <input data-role="none" type="number" id="schutz_soc_max" name="schutz_soc_max"<?= zd_markierung('schutz_soc_max') ?> value="<?= zd_e((string) $zd_cfg['schutz_soc_max']) ?>" min="0" max="100">
 </div>
 <div class="sm-feld">
   <label for="schutz_temp_min"><?= zd_e(zd_t('EINST.L_SCHUTZ_TEMP_MIN')) ?></label>
-  <input data-role="none" type="text" id="schutz_temp_min" name="schutz_temp_min" value="<?= zd_e($zd_cfg['schutz_temp_min']) ?>" size="8">
+  <input data-role="none" type="text" id="schutz_temp_min" name="schutz_temp_min"<?= zd_markierung('schutz_temp_min') ?> value="<?= zd_e($zd_cfg['schutz_temp_min']) ?>" size="8">
 </div>
 <div class="sm-feld">
   <label for="schutz_temp_max"><?= zd_e(zd_t('EINST.L_SCHUTZ_TEMP_MAX')) ?></label>
-  <input data-role="none" type="text" id="schutz_temp_max" name="schutz_temp_max" value="<?= zd_e($zd_cfg['schutz_temp_max']) ?>" size="8">
+  <input data-role="none" type="text" id="schutz_temp_max" name="schutz_temp_max"<?= zd_markierung('schutz_temp_max') ?> value="<?= zd_e($zd_cfg['schutz_temp_max']) ?>" size="8">
   <div class="sm-hilfe"><?= zd_t('EINST.H_SCHUTZ_TEMP') ?></div>
 </div>
 
@@ -1270,7 +1348,7 @@ foreach (array(
 </div>
 <div class="sm-feld">
   <label for="energie_monate"><?= zd_e(zd_t('EINST.L_ENERGIE_MONATE')) ?></label>
-  <input data-role="none" type="number" id="energie_monate" name="energie_monate" value="<?= (int) $zd_cfg['energie_monate'] ?>" min="1" max="120">
+  <input data-role="none" type="number" id="energie_monate" name="energie_monate"<?= zd_markierung('energie_monate') ?> value="<?= zd_e((string) $zd_cfg['energie_monate']) ?>" min="1" max="120">
 </div>
 
 <?php /* Broker und MQTT standen hier bis zu dieser Fassung.
@@ -1279,6 +1357,7 @@ foreach (array(
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php $zd_cfg = $zd_cfg_gespeichert; ?>
 
 <?php /* Dieser Abschnitt stand bis 0.9.17 MITTEN IM Einstellungsformular.
          Der Browser verwirft verschachtelte <form>-Marken: die beiden
@@ -1307,12 +1386,21 @@ foreach (array(
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_ein" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_EIN')) ?></button>
   </form>
 </div>
+<?php /* X-3: gespeicherte Werte, die das eigene Zurueckspielen abweisen wuerde -
+         dieselbe Pruefung wie beim Zurueckspielen, nur Namen, nie Werte. */
+$zd_x3 = zd_rueckspiel_befund($zd_cfg);
+if ($zd_x3) { ?>
+<div class="sm-warnung"><?= sprintf(zd_t('EINST.SICH_X3_WARNUNG'), '<span class="sm-mono">' . zd_e(implode(', ', $zd_x3)) . '</span>') ?></div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $zd_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 
 <h2>MQTT</h2>
+<?php /* X-2: wie beim Formular Einstellungen, nur bis </form>. */
+$zd_cfg_gespeichert = $zd_cfg;
+$zd_cfg = zd_eingaben_ueberlagern($zd_cfg, 'mqtt'); ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
@@ -1321,22 +1409,22 @@ foreach (array(
 <div class="sm-hilfe"><?= zd_t('EINST.BROKER_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="broker_host"><?= zd_e(zd_t('EINST.L_BROKER_HOST')) ?></label>
-  <input data-role="none" type="text" id="broker_host" name="broker_host" value="<?= zd_e($zd_cfg['broker_host']) ?>" placeholder="<?= zd_e($zd_mqtt['broker']) ?>">
+  <input data-role="none" type="text" id="broker_host" name="broker_host"<?= zd_markierung('broker_host') ?> value="<?= zd_e($zd_cfg['broker_host']) ?>" placeholder="<?= zd_e($zd_mqtt['broker']) ?>">
 </div>
 <div class="sm-feld">
   <label for="broker_port"><?= zd_e(zd_t('EINST.L_BROKER_PORT')) ?></label>
-  <input data-role="none" type="number" id="broker_port" name="broker_port" value="<?= (int) $zd_cfg['broker_port'] ?>" min="1" max="65535">
+  <input data-role="none" type="number" id="broker_port" name="broker_port"<?= zd_markierung('broker_port') ?> value="<?= zd_e((string) $zd_cfg['broker_port']) ?>" min="1" max="65535">
 </div>
 <div class="sm-feld">
   <label for="broker_user"><?= zd_e(zd_t('EINST.L_BROKER_USER')) ?></label>
-  <input data-role="none" type="text" id="broker_user" name="broker_user" value="<?= zd_e($zd_cfg['broker_user']) ?>" placeholder="<?= zd_e($zd_mqtt['user']) ?>">
+  <input data-role="none" type="text" id="broker_user" name="broker_user"<?= zd_markierung('broker_user') ?> value="<?= zd_e($zd_cfg['broker_user']) ?>" placeholder="<?= zd_e($zd_mqtt['user']) ?>">
 </div>
 <div class="sm-feld">
   <label for="broker_pw"><?= zd_e(zd_t('EINST.L_BROKER_PW')) ?></label>
-  <input data-role="none" type="password" id="broker_pw" name="broker_pw" value="" placeholder="<?= $zd_cfg['broker_pw'] !== '' ? zd_e(sprintf(zd_t('EINST.PW_GESETZT'), strlen((string) $zd_cfg['broker_pw']))) : zd_e(zd_t('EINST.PW_LEER')) ?>">
+  <input data-role="none" type="password" id="broker_pw" name="broker_pw"<?= zd_markierung('broker_pw') ?> value="" placeholder="<?= $zd_cfg['broker_pw'] !== '' ? zd_e(sprintf(zd_t('EINST.PW_GESETZT'), strlen((string) $zd_cfg['broker_pw']))) : zd_e(zd_t('EINST.PW_LEER')) ?>">
   <div class="sm-hilfe"><?= zd_t('EINST.H_BROKER_PW') ?></div>
   <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="broker_pw_loeschen" value="1">
+    <input data-role="none" type="checkbox" name="broker_pw_loeschen"<?= zd_markierung('broker_pw_loeschen') ?> value="1">
     <?= zd_e(zd_t('EINST.L_BROKER_PW_LOESCHEN')) ?>
   </label>
 </div>
@@ -1349,11 +1437,11 @@ foreach (array(
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= zd_e(zd_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= zd_e($zd_cfg['mqtt_topic']) ?>" placeholder="zendure">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic"<?= zd_markierung('mqtt_topic') ?> value="<?= zd_e($zd_cfg['mqtt_topic']) ?>" placeholder="zendure">
 </div>
 <div class="sm-feld">
   <label for="mqtt_auffrischung"><?= zd_e(zd_t('EINST.L_MQTT_AUFFR')) ?></label>
-  <input data-role="none" type="number" id="mqtt_auffrischung" name="mqtt_auffrischung" value="<?= (int) $zd_cfg['mqtt_auffrischung'] ?>" min="0" max="3600">
+  <input data-role="none" type="number" id="mqtt_auffrischung" name="mqtt_auffrischung"<?= zd_markierung('mqtt_auffrischung') ?> value="<?= zd_e((string) $zd_cfg['mqtt_auffrischung']) ?>" min="0" max="3600">
   <div class="sm-hilfe"><?= zd_t('EINST.H_MQTT_AUFFR') ?></div>
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span></div>
@@ -1361,6 +1449,7 @@ foreach (array(
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php $zd_cfg = $zd_cfg_gespeichert; ?>
 <h2><?= zd_e(zd_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$zd_mqtt['gefunden']) { ?>
@@ -1391,7 +1480,7 @@ foreach (array(
 </div>
 
 <h2><?= zd_e(zd_t('MQTT.H_ABO')) ?></h2>
-<div class="sm-warnung"><?= zd_t('MQTT.' . $zd_abo_schl) ?><?php
+<div class="<?= $zd_abo_kl ?>"><?= zd_t('MQTT.' . $zd_abo_schl) ?><?php
 if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.ABO_GEMESSEN'), (int) $zd_gw['fassung'])) ?></span><?php } ?></div>
 <div class="sm-step"><?= zd_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= zd_e($zd_cfg['mqtt_topic']) ?>/#</span></p>
@@ -1424,7 +1513,7 @@ foreach (zd_mqtt_themen() as $zd_thema => $zd_schluessel) { ?>
 <div class="sm-step"><b><?= zd_e(zd_t('LOX.S2_TITEL')) ?></b><br>
 <?= zd_t('LOX.S2_TEXT') ?>
 <p><span class="sm-mono"><?= zd_e($zd_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= zd_t('MQTT.' . $zd_abo_schl) ?><?php
+<div class="<?= $zd_abo_kl ?>"><?= zd_t('MQTT.' . $zd_abo_schl) ?><?php
 if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.ABO_GEMESSEN'), (int) $zd_gw['fassung'])) ?></span><?php } ?></div>
 </div>
 

@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.28 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.29 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,21 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.29
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen unter PHP
+7.4 und 8.5; nicht am Gerät.
+
+* Der rote Satz „Abo von Hand unter Subscriptions“ erscheint nur noch, wenn
+  `mqtt_subscriptions.cfg` fehlt oder ein altes Präfix trägt; sonst steht grün
+  „Das Gateway abonniert die Themengruppe selbst“.
+* **Bei einer Beanstandung wird nichts gespeichert** – auch nicht die übrigen
+  Felder; unter MQTT wird dann auch nichts geleert und keine Abodatei geschrieben.
+  Die eingetippten Werte kommen markiert zurück, das Broker-Passwort nie.
+* „Konfiguration sichern“ warnt gelb, wenn das Zurückspielen die Sicherung
+  abweisen würde (`_warnung`, nur Namen).
 
 ## Version 0.9.28 — ein toter Dienst sieht nicht mehr gesund aus
 
@@ -1024,6 +1039,11 @@ alles Übrige gespeichert und die Beanstandung daneben gemeldet.
 Übergangen heißt: die **bisherige** Angabe derselben Zeile bleibt stehen. Sie
 einfach wegzulassen wäre schlimmer als das alte Verhalten gewesen — dann
 löschte ein Tippfehler das Gerät.
+
+Das gilt nicht mehr (Entscheidung vom 30.09.2026): Bei einer Beanstandung wird
+**nichts** gespeichert, auch nicht das Übrige. Dafür stehen die eingetippten
+Werte danach wieder im Formular, das beanstandete Feld rot umrandet; das
+Broker-Passwort kommt nie zurück.
 
 ### Fremde Formulare wirkten
 
