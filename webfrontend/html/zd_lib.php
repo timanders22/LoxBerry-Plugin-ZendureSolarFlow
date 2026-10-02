@@ -327,6 +327,15 @@ function zd_vorgaben()
          * trotzdem alles gesendet, damit ein neu gestartetes Gateway einen
          * vollstaendigen Stand bekommt. 0 schaltet die Sperre ab. */
         'mqtt_auffrischung' => 300,
+
+        /* --- Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25) --------
+         * Meldet ab Werk, wenn mehr als ein Schreiber Sollwerte an dasselbe
+         * Geraet schickt (aendert am Haus nichts); sperrt ab Werk nicht. */
+        'wache_ein'         => 1,   // mehrere Schreiber im Fenster melden (Protokoll, Reiter Test)
+        'wache_fenster_min' => 15,  // Fenster in Minuten (1..120)
+        'wache_lb_melden'   => 0,   // neue Runde zusaetzlich als LoxBerry-Meldung
+        'wache_sperren_ein' => 0,   // fremde Schreiber mit 409 abweisen
+        'wache_erlaubt'     => '',  // erlaubte Schreiber: Kennung, Adresse oder Kennung@Adresse
     );
 }
 
@@ -703,6 +712,9 @@ function zd_config_speichern($cfg)
      * Gespeichert wird trotzdem - nur der Rueckweg bleibt stehen. */
     zd_zweitschrift_ziehen($p['config'], $p['sicherung'], (array) $cfg,
                            array('aktionstoken'), 0600);
+    /* Schreiber-Wache (Energie-1 C1): die Merker ausgetragener oder umgestellter
+     * Geraete gehen mit. */
+    zd_wache_aufraeumen();
     return true;
 }
 
@@ -2154,6 +2166,594 @@ function zd_befehl_absetzen($befehl, $wartezeit = null)
     return array(2, sprintf(zd_t('TEST.M_WS_KEINE_ANTWORT'), $wartezeit));
 }
 
+/* ================= Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25) ==================
+ *
+ * WOZU. Ein Speicher soll nicht von zwei Reglern zugleich gefuehrt werden. Im Haus
+ * koordiniert Loxone (ENERGIE1_ENTWURF.md, Weg C); ein zweiter Schreiber am Endpunkt -
+ * ein anderes Plugin, ein Skript, ein zweiter Miniserver - stellte dieselben Groessen
+ * (Leistung, Ladezustandsgrenzen, Leistungsgrenzen) gegen Loxone, und bis 0.9.32
+ * unterschied der Endpunkt seine Schreiber nicht.
+ *
+ * WAS. Jeder Sollwert-Befehl (zd_wache_gilt(): laden, entladen, aus, socmin, socmax,
+ * grenzeaus, grenzeein) wird je Geraet mit seiner Herkunft gemerkt: optional
+ * &von=<kennung> (die Vorlage setzt von=loxone) und der Absender (REMOTE_ADDR). Ein
+ * Schreiber ist das Paar Kennung@Absender; ohne &von= heisst er "ohne Kennung" - das
+ * ist kein Fehler, so erscheint jede Loxone-Vorlage, die nicht neu eingelesen wurde.
+ * abruf ist kein Sollwert (es fragt das Geraet nur sofort ab, statt auf den Takt zu
+ * warten, und hat seine eigene Bremse); zwei Abrufer fuehren keinen Speicher.
+ * Kommen innerhalb des Fensters (wache_fenster_min, ab Werk 15) an einem Geraet Befehle
+ * von mehr als einem Schreiber, steht das
+ *   - im Protokoll, gebremst: eine Zeile, wenn die Runde der Schreiber neu ist, sonst
+ *     hoechstens eine je Fenster,
+ *   - in der Antwort (;SCHREIBER=n, vor MELDUNG),
+ *   - im Reiter Test (die Schreiber der letzten 24 h je Geraet),
+ *   - bei einer neuen Runde und nur mit wache_lb_melden (ab Werk aus) als
+ *     LoxBerry-Meldung.
+ * Abgewiesen wird dadurch NICHTS. Der Trockenlauf (&dry=1) merkt sich nichts, prueft
+ * die Sperre aber wie echt.
+ *
+ * SPERREN (wache_sperren_ein, ab Werk aus): ein Befehl eines Schreibers, der nicht in
+ * wache_erlaubt steht, bekommt HTTP 409 GRUND=FREMDSCHREIBER, und nichts wird
+ * eingereiht. Eine Ruecknahme gibt es bei diesem Plugin NICHT: "aus" heisst im README
+ * "Regie an das Geraet zurueckgeben", baut beim Befehlssatz zensdk aber genau dieselbe
+ * Nutzlast wie "entladen 0" (smartMode 0, acMode 2, outputLimit 0, inputLimit 0) - das
+ * ist ein Sollwert "Leerlauf halten" wie p=0 beim Marstek, und ein Fremder, der ihn
+ * schickt, ueberschreibt Loxone. Die Gleichwert-Unterdrueckung zaehlt "aus" ebenso zur
+ * Leistung. Der Rueckfall des Dienstes und die Knoepfe des Reiters Test gehen nicht
+ * durch den Endpunkt und damit nicht durch die Wache. Das Urteil braucht den Merker
+ * nicht, es haengt nur an der Liste und an der Anfrage. Ist Sperren an, die Liste aber
+ * leer oder unbrauchbar (nur von Hand moeglich - Formular und Sicherung weisen das ab),
+ * wirkt die Sperre nicht, und das Protokoll sagt es: eine verschriebene Liste darf den
+ * Hausregler nicht aussperren.
+ *
+ * DER MERKER FAELLT OFFEN AUS. <datadir>/schreiber_geraet<N>.json - der Datenordner ist
+ * der Laufzeitordner dieser Linie (eine eigene Ramdisk hat sie nicht; dort liegen schon
+ * die Warteschlange und der Gleichwert-Merker, und der Installer raeumt ihn bei jedem
+ * Update ab, also beginnt die Wache danach leer). Geoeffnet mit close-on-exec ('e',
+ * unter Windows-PHP 7.4 und 8.5 gemessen: geht), gesperrt mit flock hoechstens 2 s,
+ * gehalten nur fuer Lesen und Schreiben, nie waehrend des Einreihens. Laesst er sich
+ * nicht oeffnen, sperren oder schreiben, geht der Befehl trotzdem hinaus - die Antwort
+ * traegt ;WACHE=MERKER, das Protokoll eine Zeile je Zustandswechsel. Anders als die
+ * Gleichwert-Unterdrueckung (503, faellt geschlossen aus): die entscheidet ueber das
+ * Senden, die Wache beobachtet nur. Der Merker traegt die Kennung des Geraets (Weg und
+ * Adresse); passt sie nicht mehr zur Nummer, beginnt er neu, und beim Speichern der
+ * Einstellungen raeumt zd_wache_aufraeumen() die Merker ausgetragener Geraete ab.
+ *
+ * WARUM 15 MINUTEN. Das Fenster muss den langsamsten regelmaessigen Schreiber fassen;
+ * Loxone sendet bei jeder Aenderung, ein Fahrplan oft nur alle paar Minuten. Einstellbar
+ * 1 bis 120 min, wie bei Marstek 1.1.19 und EVCC 0.9.37.
+ */
+if (!defined('ZD_WACHE_AUFBEWAHREN_S')) {
+    define('ZD_WACHE_AUFBEWAHREN_S', 86400);   // Reiter Test: Schreiber der letzten 24 h
+}
+if (!defined('ZD_WACHE_HOECHSTENS')) {
+    define('ZD_WACHE_HOECHSTENS', 20);          // Schreiber im Merker je Geraet
+}
+
+/** Die Einstellungen der Wache - EINE Liste fuer Vorgaben, Sicherung und Formular. */
+function zd_wache_schluessel()
+{
+    return array('wache_ein', 'wache_fenster_min', 'wache_lb_melden', 'wache_sperren_ein', 'wache_erlaubt');
+}
+
+/** Steht die Wache an dieser Aktion? Die Sollwert-Befehle - nicht abruf (Kopf). */
+function zd_wache_gilt($aktion)
+{
+    return in_array($aktion, array('laden', 'entladen', 'aus', 'socmin', 'socmax', 'grenzeaus', 'grenzeein'), true);
+}
+
+/** Pfad des Merkers eines Geraets. */
+function zd_wache_datei($nr)
+{
+    return zd_paths()['datadir'] . '/schreiber_geraet' . (int) $nr . '.json';
+}
+
+/** Woran der Merker sein Geraet erkennt: Weg und Adresse (bzw. Produkt- und Geraetekennung).
+ *  Die Nummer allein genuegt nicht - sie ist die Stelle in der Geraeteliste und rueckt
+ *  nach, wenn davor ein Geraet ausgetragen wird. */
+function zd_wache_geraetekennung(array $g)
+{
+    return (isset($g['art']) && $g['art'] === 'mqtt')
+        ? 'mqtt|' . (string) $g['prodkey'] . '/' . (string) $g['deviceid']
+        : 'http|' . (string) (isset($g['ip']) ? $g['ip'] : '');
+}
+
+/** Eine Kennung fuer &von= und fuer die Liste: 1 bis 32 Zeichen aus A-Z a-z 0-9 _ -.
+ *  Ohne Punkt und Doppelpunkt - so verwechselt sie sich nie mit einer Adresse.
+ *  \z statt $: ein angehaengter Zeilenumbruch (von=loxone%0A) passt nicht. */
+function zd_wache_kennung_gueltig($k)
+{
+    return is_string($k) && preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $k) === 1;
+}
+
+/** Eine Absenderadresse (IPv4 oder IPv6) fuer die Liste. */
+function zd_wache_adresse_gueltig($a)
+{
+    return is_string($a) && $a !== '' && filter_var($a, FILTER_VALIDATE_IP) !== false;
+}
+
+/** Zwei Adressen gleich? IPv6 in jeder Schreibweise (::1 = 0:0:0:0:0:0:0:1). */
+function zd_wache_adresse_gleich($a, $b)
+{
+    if ((string) $a === (string) $b) {
+        return true;
+    }
+    $x = @inet_pton((string) $a);
+    $y = @inet_pton((string) $b);
+    return $x !== false && $y !== false && $x === $y;
+}
+
+/** Der Absender dieser Anfrage, auf die zulaessigen Zeichen beschraenkt (wie zd_ep_abweisung). */
+function zd_wache_absender()
+{
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
+    return substr((string) $ip, 0, 45);
+}
+
+/**
+ * Die Liste der erlaubten Schreiber zerlegen (rein).
+ * Eintraege durch Komma, Semikolon oder Leerraum getrennt, je Eintrag eine Kennung
+ * ("loxone"), eine Adresse (die des Miniservers) oder beides als Kennung@Adresse.
+ * Rueckgabe: array(Eintraege array('von','ip'), unzulaessige Teile); mehr als 16
+ * Eintraege sind ein unzulaessiger Teil "> 16".
+ */
+function zd_wache_liste($text)
+{
+    if (!is_string($text)) {
+        return array(array(), array('?'));
+    }
+    $ein = array();
+    $fehl = array();
+    foreach (preg_split('/[\s,;]+/', trim($text)) as $teil) {
+        if ($teil === '') {
+            continue;
+        }
+        if (strpos($teil, '@') !== false) {
+            list($von, $ip) = explode('@', $teil, 2);
+            if (zd_wache_kennung_gueltig($von) && zd_wache_adresse_gueltig($ip)) {
+                $ein[] = array('von' => $von, 'ip' => $ip);
+                continue;
+            }
+        } elseif (zd_wache_adresse_gueltig($teil)) {
+            $ein[] = array('von' => '', 'ip' => $teil);
+            continue;
+        } elseif (zd_wache_kennung_gueltig($teil)) {
+            $ein[] = array('von' => $teil, 'ip' => '');
+            continue;
+        }
+        $fehl[] = substr((string) preg_replace('/[^\x20-\x7E]/', '?', $teil), 0, 40);
+    }
+    if (count($ein) > 16) {
+        $fehl[] = '> 16';
+    }
+    return array($ein, $fehl);
+}
+
+/** Die Liste als Wert einer Einstellung pruefen (rein). Rueckgabe array(Code, Teile):
+ *  Code '' = brauchbar (auch leer), sonst TEXT (keine Zeichenkette), LANG (> 512 Zeichen),
+ *  STEUER (Steuerzeichen) oder TEILE (unverstandene Eintraege bzw. mehr als 16). */
+function zd_wache_liste_pruefen($v)
+{
+    if (!is_string($v)) {
+        return array('TEXT', array());
+    }
+    if (strlen($v) > 512) {
+        return array('LANG', array());
+    }
+    if (preg_match('/[\x00-\x1F\x7F]/', $v) === 1) {
+        return array('STEUER', array());
+    }
+    list(, $fehl) = zd_wache_liste($v);
+    return $fehl ? array('TEILE', $fehl) : array('', array());
+}
+
+/** Dieselbe Pruefung als Text fuer Formular und Sicherung: '' oder der Grund (HTML-sicher). */
+function zd_wache_liste_mangel($v)
+{
+    list($code, $teile) = zd_wache_liste_pruefen($v);
+    if ($code === '') {
+        return '';
+    }
+    if ($code === 'TEILE') {
+        return sprintf(zd_t('EINST.WACHE_M_TEILE'), zd_e(implode(', ', array_slice($teile, 0, 4))));
+    }
+    return zd_t('EINST.WACHE_M_' . $code);
+}
+
+/** Steht der Schreiber Kennung@Absender in der Liste? (rein) */
+function zd_wache_erlaubt(array $eintraege, $von, $ip)
+{
+    foreach ($eintraege as $e) {
+        if ($e['von'] !== '' && $e['von'] !== (string) $von) {
+            continue;
+        }
+        if ($e['ip'] !== '' && !zd_wache_adresse_gleich($e['ip'], $ip)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+/** Die Einstellungen der Wache aus einer Konfiguration. Was die eigene Pruefung
+ *  (zd_sicherung_wert_pruefen, dieselbe wie beim Zurueckspielen) nicht besteht - von
+ *  Hand bearbeitet -, gilt mit der Vorgabe; "Einstellungen sichern" warnt dann (X-3). */
+function zd_wache_einstellungen(array $cfg)
+{
+    $v = zd_vorgaben();
+    $aus = array();
+    foreach (zd_wache_schluessel() as $k) {
+        $aus[$k] = (array_key_exists($k, $cfg) && zd_sicherung_wert_pruefen($k, $cfg[$k]) === '') ? $cfg[$k] : $v[$k];
+    }
+    $aus['wache_ein'] = (int) $aus['wache_ein'];
+    $aus['wache_fenster_min'] = (int) $aus['wache_fenster_min'];
+    $aus['wache_lb_melden'] = (int) $aus['wache_lb_melden'];
+    $aus['wache_sperren_ein'] = (int) $aus['wache_sperren_ein'];
+    $aus['wache_erlaubt'] = (string) $aus['wache_erlaubt'];
+    return $aus;
+}
+
+/** Kreuzpruefung (rein): Sperren an ohne einen einzigen erlaubten Schreiber wiese jeden
+ *  Befehl ab - auch den des Hausreglers. Rueckgabe true = Mangel. */
+function zd_wache_kreuz($c)
+{
+    return is_array($c) && isset($c['wache_sperren_ein'], $c['wache_erlaubt'])
+        && is_scalar($c['wache_sperren_ein']) && (string) $c['wache_sperren_ein'] === '1'
+        && is_string($c['wache_erlaubt']) && trim($c['wache_erlaubt']) === '';
+}
+
+/**
+ * Das Urteil der Sperre (rein). Rueckgabe array(aktiv, erlaubt, fehler):
+ * aktiv = Sperren an UND eine brauchbare Liste. fehler 'LISTE': Sperren an, die Liste
+ * aber leer oder unbrauchbar - dann wirkt die Sperre NICHT (Kopf).
+ */
+function zd_wache_sperre_urteil(array $w, $von, $ip)
+{
+    if ((int) $w['wache_sperren_ein'] !== 1) {
+        return array(false, true, '');
+    }
+    list($ein, $fehl) = zd_wache_liste((string) $w['wache_erlaubt']);
+    if ($fehl || !$ein) {
+        return array(false, true, 'LISTE');
+    }
+    return array(true, zd_wache_erlaubt($ein, $von, $ip), '');
+}
+
+/**
+ * Den Merker eines Geraets fortschreiben (rein, ohne Datei - von den Proben direkt gerufen).
+ * $m: array('geraet' => Kennung des Geraets, 'schreiber' => array('<von>@<ip>' => Eintrag),
+ *           'runde' => '', 'gemeldet' => ts)
+ * Rueckgabe: array(Merker, Schreiber im Fenster (neueste zuerst), melden, neue Runde).
+ * "Runde" ist die Menge der Schreiber im Fenster; gemeldet wird eine neue Runde sofort,
+ * dieselbe hoechstens einmal je Fenster. Faellt die Runde auf einen Schreiber zurueck,
+ * gilt die naechste zweite wieder als neu. Gehoert der Merker zu einem anderen Geraet
+ * (Kennung anders), beginnt er neu.
+ */
+function zd_wache_fortschreiben(array $m, $geraet, $von, $ip, $art, $abgewiesen, $jetzt, $fenster_s)
+{
+    if (!isset($m['geraet']) || (string) $m['geraet'] !== (string) $geraet) {
+        $m = array();
+    }
+    $jetzt = (int) $jetzt;
+    $liste = (isset($m['schreiber']) && is_array($m['schreiber'])) ? $m['schreiber'] : array();
+    $schl = (string) $von . '@' . (string) $ip;
+    $e = (isset($liste[$schl]) && is_array($liste[$schl])) ? $liste[$schl]
+        : array('von' => (string) $von, 'ip' => (string) $ip, 'erst' => $jetzt, 'n' => 0, 'abgewiesen' => 0);
+    $e['zuletzt'] = $jetzt;
+    $e['n'] = (int) (isset($e['n']) ? $e['n'] : 0) + 1;
+    $e['abgewiesen'] = (int) (isset($e['abgewiesen']) ? $e['abgewiesen'] : 0) + ($abgewiesen ? 1 : 0);
+    $e['art'] = (string) $art;
+    $liste[$schl] = $e;
+    // Aufbewahren: 24 h (in beide Richtungen - eine zurueckgesprungene Uhr laesst keinen
+    // Eintrag ewig stehen), hoechstens ZD_WACHE_HOECHSTENS je Geraet.
+    foreach ($liste as $k => $x) {
+        if (!is_array($x) || !isset($x['zuletzt'], $x['von'], $x['ip'])
+                || abs($jetzt - (int) $x['zuletzt']) > ZD_WACHE_AUFBEWAHREN_S) {
+            unset($liste[$k]);
+        }
+    }
+    uasort($liste, function ($a, $b) {
+        return (int) $b['zuletzt'] - (int) $a['zuletzt'];
+    });
+    $liste = array_slice($liste, 0, ZD_WACHE_HOECHSTENS, true);
+    $fenster = array();
+    foreach ($liste as $k => $x) {
+        if (abs($jetzt - (int) $x['zuletzt']) < (int) $fenster_s) {
+            $fenster[$k] = $x;
+        }
+    }
+    $gemeldet = isset($m['gemeldet']) ? (int) $m['gemeldet'] : 0;
+    $runde = '';
+    $melden = false;
+    $neu = false;
+    if (count($fenster) > 1) {
+        $k2 = array_keys($fenster);
+        sort($k2, SORT_STRING);
+        $runde = implode('|', $k2);
+        $neu = ($runde !== (isset($m['runde']) ? (string) $m['runde'] : ''));
+        $melden = $neu || abs($jetzt - $gemeldet) >= (int) $fenster_s;
+        if ($melden) {
+            $gemeldet = $jetzt;
+        }
+    } else {
+        $gemeldet = 0;
+    }
+    return array(array('geraet' => (string) $geraet, 'schreiber' => $liste, 'runde' => $runde, 'gemeldet' => $gemeldet),
+                 array_values($fenster), $melden, $neu);
+}
+
+/** Ein Schreiber als Text (Kennung@Absender, ohne Kennung so benannt). $ohne: das Wort fuer
+ *  "ohne Kennung" - das Protokoll bleibt deutsch, der Reiter Test reicht die Sprachdatei herein. */
+function zd_wache_name(array $x, $ohne = 'ohne Kennung')
+{
+    return ((string) $x['von'] !== '' ? $x['von'] : (string) $ohne) . '@' . ((string) $x['ip'] !== '' ? $x['ip'] : '?');
+}
+
+/** Die Schreiber einer Runde als Text fuer Protokoll und Meldung. */
+function zd_wache_text(array $fenster)
+{
+    $t = array();
+    foreach ($fenster as $x) {
+        $t[] = zd_wache_name($x)
+             . ' (' . (int) $x['n'] . 'x' . (!empty($x['abgewiesen']) ? ', ' . (int) $x['abgewiesen'] . ' abgewiesen' : '')
+             . ', zuletzt ' . date('H:i:s', (int) $x['zuletzt']) . ' ' . (string) $x['art'] . ')';
+    }
+    return implode(', ', $t);
+}
+
+/** Den Merker oeffnen - mit close-on-exec ('e'): ein Kindprozess erbt die flock-Sperre sonst
+ *  und haelt sie ueber das Ende des Endpunkts hinaus ("Sperre vererbt sich an Kinder").
+ *  Rueckgabe Handle oder false; ein Verzeichnis an der Stelle ist false. Angelegt wird nur
+ *  die Datei, kein Ordner. */
+function zd_wache_oeffnen($f, $modus = 'c+')
+{
+    if (is_dir($f)) {
+        return false;
+    }
+    return @fopen($f, $modus . 'e');
+}
+
+/** Eine Protokollzeile je Zustandswechsel (nicht je Aufruf): $fehl wahr und vorher in
+ *  Ordnung -> $text_fehl; wieder in Ordnung nach einem Fehler -> $text_wieder. Gemerkt in
+ *  <datadir>/.wache_<schluessel>; geschrieben wird nur beim Wechsel. */
+function zd_wache_wechsel($schluessel, $fehl, $text_fehl, $text_wieder)
+{
+    $f = zd_paths()['datadir'] . '/.wache_' . preg_replace('/[^a-z0-9_]/i', '', (string) $schluessel);
+    $war = is_file($f);
+    if ($fehl && !$war) {
+        @file_put_contents($f, (string) time());
+        zd_log($text_fehl);
+    } elseif (!$fehl && $war) {
+        @unlink($f);
+        zd_log($text_wieder);
+    }
+}
+
+/** LoxBerry-Meldung der Wache (nur mit wache_lb_melden). Derselbe Weg wie zd_melden() seit
+ *  0.9.18: loxberry_log.php selbst nachladen - keine phplib laedt es von allein, und ohne es
+ *  ist notify_ext() nie erreichbar. Gelingt das nicht, sagt es das Protokoll (gebremst). */
+function zd_wache_lb_melden($text)
+{
+    $zd_home = zd_paths()['home'];
+    $zd_liblog = $zd_home !== '' ? $zd_home . '/libs/phplib/loxberry_log.php' : '';
+    if (!function_exists('notify_ext') && $zd_liblog !== '' && is_file($zd_liblog)) {
+        @require_once $zd_liblog;
+    }
+    if (!function_exists('notify_ext')) {
+        zd_log_gebremst('wache_lb', 'Schreiber-Wache: die LoxBerry-Meldung ist eingeschaltet, aber notify_ext() ist '
+            . 'nicht erreichbar (' . ($zd_liblog !== '' ? $zd_liblog : 'keine LoxBerry-Wurzel') . ') - gemeldet wird '
+            . 'nur im Protokoll.', 3600);
+        return false;
+    }
+    notify_ext(array(
+        'PACKAGE'  => zd_paths()['plugin'],
+        'NAME'     => 'zendure',
+        'MESSAGE'  => (string) $text,
+        'SEVERITY' => 4,
+    ));
+    return true;
+}
+
+/**
+ * Einen Befehl bei der Wache anmelden. Faellt offen aus (Kopf).
+ * $g: das Geraet aus zd_geraete(); $w: zd_wache_einstellungen().
+ * Rueckgabe: array('merker' => ging, 'anzahl' => Schreiber im Fenster an diesem Geraet).
+ */
+function zd_wache_merken(array $g, $von, $ip, $art, $abgewiesen, array $w)
+{
+    $aus = array('merker' => true, 'anzahl' => 0);
+    $nr = (int) $g['nr'];
+    $fenster_s = 60 * (int) $w['wache_fenster_min'];
+    $f = zd_wache_datei($nr);
+    $erg = null;
+    $unlesbar = -1;
+    $fh = zd_wache_oeffnen($f);
+    if ($fh !== false) {
+        $ende = microtime(true) + 2;
+        $gesperrt = true;
+        while (!@flock($fh, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $ende) {
+                $gesperrt = false;
+                break;
+            }
+            usleep(20000);
+        }
+        if ($gesperrt) {
+            $roh = (string) stream_get_contents($fh);
+            $m = $roh === '' ? array() : json_decode($roh, true);
+            if (!is_array($m)) {
+                // Unlesbar: neu beginnen - der Merker beobachtet nur (eine Zeile, unten).
+                $unlesbar = strlen($roh);
+                $m = array();
+            }
+            list($m2, $fenster, $melden, $neu) = zd_wache_fortschreiben($m, zd_wache_geraetekennung($g), $von, $ip,
+                $art, $abgewiesen, time(), $fenster_s);
+            $inhalt = (string) json_encode($m2);
+            if ($inhalt !== '' && @ftruncate($fh, 0) && @rewind($fh)
+                    && @fwrite($fh, $inhalt) === strlen($inhalt) && @fflush($fh)) {
+                $erg = array($fenster, $melden, $neu);
+            }
+            @flock($fh, LOCK_UN);
+        }
+        @fclose($fh);
+    }
+    // Protokoll und Meldung erst nach dem Schliessen: gesperrt wird nur fuer Lesen und Schreiben.
+    if ($unlesbar >= 0) {
+        zd_log('Schreiber-Wache, Geraet ' . $nr . ': der Merker ' . $f . ' war unlesbar (' . $unlesbar
+            . ' Byte) und beginnt neu.');
+    }
+    zd_wache_wechsel('merker' . $nr, $erg === null,
+        'Der Merker der Schreiber-Wache (' . $f . ') laesst sich nicht oeffnen, sperren oder schreiben - die '
+        . 'Befehle gehen weiter hinaus, nur das Melden mehrerer Schreiber faellt fuer Geraet ' . $nr . ' aus, bis das '
+        . 'behoben ist. Pruefen: Platz und Eigentuemer (loxberry).',
+        'Der Merker der Schreiber-Wache fuer Geraet ' . $nr . ' ist wieder lesbar.');
+    if ($erg === null) {
+        $aus['merker'] = false;
+        return $aus;
+    }
+    list($fenster, $melden, $neu) = $erg;
+    $aus['anzahl'] = count($fenster);
+    if ($melden) {
+        $text = 'Schreiber-Wache, Geraet ' . $nr . ' (' . $g['name'] . '): ' . count($fenster)
+              . ' Schreiber in den letzten ' . (int) $w['wache_fenster_min'] . ' min - ' . zd_wache_text($fenster)
+              . ((int) $w['wache_sperren_ein'] === 1 ? '.' : '. Nichts abgewiesen (Sperren aus).');
+        zd_log($text);
+        if ($neu && (int) $w['wache_lb_melden'] === 1) {
+            zd_wache_lb_melden($text);
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Die Wache fuer einen Sollwert-Befehl am Endpunkt (nach Geraet, Freigabe und Dienst, vor der
+ * Gleichwert-Unterdrueckung). Rueckgabe array(abweisen, Zusatz fuer die Antwortzeile):
+ * abweisen = 409 GRUND=FREMDSCHREIBER (der Endpunkt antwortet und reiht nichts ein);
+ * Zusatz ;SCHREIBER=n ab zwei Schreibern im Fenster, ;WACHE=MERKER, wenn das Merken nicht
+ * ging. Der Trockenlauf merkt sich nichts, prueft die Sperre aber wie echt.
+ */
+function zd_wache_anwenden(array $g, $aktion, $von, $trocken)
+{
+    $w = zd_wache_einstellungen(zd_config(false));
+    $ip = zd_wache_absender();
+    list($aktiv, $erlaubt, $fehler) = zd_wache_sperre_urteil($w, $von, $ip);
+    if ($fehler !== '' || $w['wache_sperren_ein'] === 1) {
+        zd_wache_wechsel('liste', $fehler !== '',
+            'Fremde Schreiber abweisen ist eingeschaltet, aber die Liste der erlaubten Schreiber ist leer oder '
+            . 'unbrauchbar - die Sperre wirkt NICHT, bis die Liste im Reiter Einstellungen berichtigt ist.',
+            'Die Liste der erlaubten Schreiber ist wieder brauchbar, die Sperre wirkt.');
+    }
+    // Keine Ruecknahme bei diesem Plugin (Kopf): jeder Sollwert eines Fremden ist sperrbar.
+    $abweisen = $aktiv && !$erlaubt;
+    $zusatz = '';
+    if (!$trocken && $w['wache_ein'] === 1) {
+        $m = zd_wache_merken($g, $von, $ip, $aktion, $abweisen, $w);
+        if ($m['anzahl'] > 1) {
+            $zusatz .= ';SCHREIBER=' . (int) $m['anzahl'];
+        }
+        if (!$m['merker']) {
+            $zusatz .= ';WACHE=MERKER';
+        }
+    }
+    return array($abweisen, $zusatz);
+}
+
+/** Den Zusatz der Wache in eine Antwortzeile setzen: vor ;MELDUNG= (die bleibt das letzte,
+ *  freie Feld), sonst ans Ende. Mit leerem Zusatz unveraendert - mit einem Schreiber ist die
+ *  Antwort also wortgleich wie vorher. */
+function zd_wache_zeile($zeile, $zusatz)
+{
+    if ($zusatz === '') {
+        return $zeile;
+    }
+    $nl = substr($zeile, -1) === "\n" ? "\n" : '';
+    $z = rtrim($zeile, "\n");
+    $i = strpos($z, ';MELDUNG=');
+    return ($i === false ? $z . $zusatz : substr($z, 0, $i) . $zusatz . substr($z, $i)) . $nl;
+}
+
+/** Die Schreiber eines Geraets fuer den Reiter Test, neueste zuerst.
+ *  Rueckgabe array(zustand, eintraege): 'ok' | 'leer' (kein Befehl in 24 h, seit dem letzten
+ *  Update, oder der Merker gehoert zu einem anderen Geraet) | 'merker' (nicht lesbar). */
+function zd_wache_lesen(array $g)
+{
+    $f = zd_wache_datei((int) $g['nr']);
+    clearstatcache(true, $f);
+    if (!file_exists($f)) {
+        return array('leer', array());
+    }
+    $fh = zd_wache_oeffnen($f, 'r');
+    if ($fh === false) {
+        return array('merker', array());
+    }
+    $ende = microtime(true) + 2;
+    $ok = true;
+    while (!@flock($fh, LOCK_SH | LOCK_NB)) {
+        if (microtime(true) >= $ende) {
+            $ok = false;
+            break;
+        }
+        usleep(20000);
+    }
+    $roh = $ok ? (string) stream_get_contents($fh) : '';
+    if ($ok) {
+        @flock($fh, LOCK_UN);
+    }
+    @fclose($fh);
+    $m = ($ok && $roh !== '') ? json_decode($roh, true) : ($ok ? array() : null);
+    if (!is_array($m)) {
+        return array('merker', array());
+    }
+    if (!isset($m['geraet']) || (string) $m['geraet'] !== zd_wache_geraetekennung($g)) {
+        return array('leer', array());
+    }
+    $aus = array();
+    $liste = (isset($m['schreiber']) && is_array($m['schreiber'])) ? $m['schreiber'] : array();
+    foreach ($liste as $x) {
+        if (!is_array($x) || !isset($x['zuletzt'], $x['n']) || abs(time() - (int) $x['zuletzt']) > ZD_WACHE_AUFBEWAHREN_S) {
+            continue;
+        }
+        $aus[] = array('von' => isset($x['von']) && is_string($x['von']) ? $x['von'] : '',
+                       'ip' => isset($x['ip']) && is_string($x['ip']) ? $x['ip'] : '',
+                       'erst' => (int) (isset($x['erst']) ? $x['erst'] : 0), 'zuletzt' => (int) $x['zuletzt'],
+                       'n' => (int) $x['n'], 'abgewiesen' => (int) (isset($x['abgewiesen']) ? $x['abgewiesen'] : 0),
+                       'art' => isset($x['art']) && is_string($x['art']) ? $x['art'] : '');
+    }
+    usort($aus, function ($a, $b) {
+        return $b['zuletzt'] - $a['zuletzt'];
+    });
+    return array($aus ? 'ok' : 'leer', $aus);
+}
+
+/** Die Merker ausgetragener oder umgestellter Geraete abraeumen (aus zd_config_speichern()).
+ *  Die Geraetenummer ist die Stelle in der Liste: wird Geraet 1 ausgetragen, ist das bisherige
+ *  Geraet 2 danach Geraet 1. Entfernt wird jeder Merker, dessen Nummer es nicht mehr gibt
+ *  oder dessen Geraetekennung nicht zur Nummer passt; ein unlesbarer bleibt (er beginnt beim
+ *  naechsten Befehl neu, mit einer Zeile). Rueckgabe: Zahl der entfernten Merker. */
+function zd_wache_aufraeumen()
+{
+    $ger = zd_geraete();
+    $weg = 0;
+    foreach (glob(zd_paths()['datadir'] . '/schreiber_geraet*.json') ?: array() as $f) {
+        if (is_dir($f) || !preg_match('/schreiber_geraet([0-9]{1,3})\.json\z/', $f, $t)) {
+            continue;
+        }
+        $nr = (int) $t[1];
+        $bleibt = false;
+        if (isset($ger[$nr])) {
+            $m = json_decode((string) @file_get_contents($f), true);
+            $bleibt = !is_array($m) || !isset($m['geraet']) || (string) $m['geraet'] === zd_wache_geraetekennung($ger[$nr]);
+        }
+        if (!$bleibt && @unlink($f)) {
+            $weg++;
+        }
+    }
+    if ($weg > 0) {
+        zd_log('Schreiber-Wache: ' . $weg . ' Merker ausgetragener oder umgestellter Geraete entfernt.');
+    }
+    return $weg;
+}
+
 /* ---------------- Konfiguration sichern und zurueckspielen ----------------
  *
  * Die Datei traegt das AKTIONSTOKEN. Das ist Absicht und muss gesagt werden:
@@ -2259,6 +2859,13 @@ function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
         $namen[] = 'schutz_soc_min';
         $namen[] = 'schutz_soc_max';
     }
+    /* Energie-1 C1: Sperren an ohne erlaubten Schreiber - dieselbe Kreuzpruefung wie das
+     * Formular. Ueber $namen warnt damit auch "Einstellungen sichern" (X-3). */
+    if (zd_wache_kreuz($cfg)) {
+        $bean[] = zd_t('EINST.SICH_WACHE_KREUZ');
+        $namen[] = 'wache_sperren_ein';
+        $namen[] = 'wache_erlaubt';
+    }
     if ($bean) {
         return array(0, zd_t('EINST.SICH_ABGEWIESEN') . '<br>' . implode('<br>', $bean));
     }
@@ -2266,6 +2873,13 @@ function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
         return array(1, '');
     }
     $hinweise = array();
+    /* Energie-1 C1: eine Sicherung von vor der Schreiber-Wache kennt deren Einstellungen
+     * nicht. Sie ist trotzdem gueltig - ein fehlender Schluessel behaelt hier ohnehin den
+     * geltenden Wert -, und die Meldung sagt es. */
+    $zd_wfehlt = array_values(array_diff(zd_wache_schluessel(), array_keys($neu)));
+    if ($zd_wfehlt) {
+        $hinweise[] = sprintf(zd_t('EINST.SICH_WACHE_BEHALTEN'), zd_e(implode(', ', $zd_wfehlt)));
+    }
     if (!isset($gut['aktionstoken']) || $gut['aktionstoken'] === '') {
         $cfg['aktionstoken'] = $alt['aktionstoken'];
         $hinweise[] = zd_t('EINST.SICH_TOKEN_BEHALTEN');
@@ -2331,6 +2945,8 @@ function zd_grenzen()
         'schutz_soc_min'    => array(0, 100),
         'schutz_soc_max'    => array(0, 100),
         'energie_monate'    => array(1, 120),
+        // Energie-1 C1: Fenster der Schreiber-Wache in ganzen Minuten.
+        'wache_fenster_min' => array(1, 120),
     );
 }
 
@@ -2362,7 +2978,8 @@ function zd_sicherung_wert_pruefen($k, $v)
         }
         return '';
     }
-    if (in_array($k, array('mqtt_ein', 'steuerung_ein', 'schutz_ein', 'energie_ein'), true)) {
+    if (in_array($k, array('mqtt_ein', 'steuerung_ein', 'schutz_ein', 'energie_ein',
+                           'wache_ein', 'wache_lb_melden', 'wache_sperren_ein'), true)) {
         return ($v === 0 || $v === 1) ? '' : zd_t('EINST.SICH_SCHALTER');
     }
     $text = function ($x, $max) {
@@ -2371,6 +2988,9 @@ function zd_sicherung_wert_pruefen($k, $v)
     switch ($k) {
         case 'mqtt_topic':
             return zd_topic_gueltig($v) ? '' : zd_t('EINST.FEHLER_TOPIC');
+        case 'wache_erlaubt':
+            // Energie-1 C1: dieselbe Zerlegung wie der Endpunkt (zd_wache_liste()).
+            return zd_wache_liste_mangel($v);
         case 'broker_host':
             return (is_string($v) && ($v === '' || preg_match('/^[A-Za-z0-9][A-Za-z0-9.\-]{0,80}\z/', $v)))
                 ? '' : zd_t('EINST.FEHLER_BROKER');
@@ -2534,7 +3154,7 @@ function zd_eingabe_felder($form)
 {
     if ($form === 'settings') {
         $text = array_keys(zd_grenzen());
-        foreach (array('schutz_temp_min', 'schutz_temp_max', 'temp_umrechnung') as $k) {
+        foreach (array('schutz_temp_min', 'schutz_temp_max', 'temp_umrechnung', 'wache_erlaubt') as $k) {
             $text[] = $k;
         }
         foreach (array_keys(zd_feldkarte()) as $k) {
@@ -2547,7 +3167,8 @@ function zd_eingabe_felder($form)
             'text'  => $text,
             'liste' => array('g_name', 'g_art', 'g_ip', 'g_prodkey', 'g_deviceid', 'g_sn', 'g_modell',
                              'g_satz', 'g_max_laden', 'g_max_entladen', 'g_quittungsfeld', 'g_kapazitaet'),
-            'haken' => array('steuerung_ein', 'schutz_ein', 'energie_ein'),
+            'haken' => array('steuerung_ein', 'schutz_ein', 'energie_ein',
+                             'wache_ein', 'wache_lb_melden', 'wache_sperren_ein'),
         );
     }
     if ($form === 'mqtt') {
@@ -4337,7 +4958,11 @@ function zd_vorlage_befehle($nummer = 1)
         $cmds[] = array(
             'title'   => 'ZENDURE_' . $nr . '_CMD_' . $c[0],
             'comment' => zd_vorlagentext($c[3]),
-            'on'      => zd_endpunkt_pfad(array('aktion' => $c[1], 'geraet' => $nr) + $c[4], true),
+            /* Energie-1 C1: von=loxone, damit die Schreiber-Wache den Miniserver von
+             * anderen Schreibern unterscheidet - am Ende der Adresse, so wie man es an
+             * einen bestehenden Befehl anhaengt. Eine alte Vorlage ohne den Zusatz geht
+             * weiter und erscheint dort als "ohne Kennung". */
+            'on'      => zd_endpunkt_pfad(array('aktion' => $c[1], 'geraet' => $nr) + $c[4] + array('von' => 'loxone'), true),
             'off'     => '',
             'analog'  => 1,
         );
@@ -4345,10 +4970,10 @@ function zd_vorlage_befehle($nummer = 1)
     // Digitalbefehle: Ein loest aus, ein Gegenstueck gibt es nicht.
     $cmds[] = array('title' => 'ZENDURE_' . $nr . '_CMD_AUS', 'analog' => 0,
                     'comment' => zd_vorlagentext('LOX.VQ_AUS'),
-                    'on' => zd_endpunkt_pfad(array('aktion' => 'aus', 'geraet' => $nr)), 'off' => '');
+                    'on' => zd_endpunkt_pfad(array('aktion' => 'aus', 'geraet' => $nr, 'von' => 'loxone')), 'off' => '');
     $cmds[] = array('title' => 'ZENDURE_CMD_ABRUF', 'analog' => 0,
                     'comment' => zd_vorlagentext('LOX.VQ_ABRUF'),
-                    'on' => zd_endpunkt_pfad(array('aktion' => 'abruf')), 'off' => '');
+                    'on' => zd_endpunkt_pfad(array('aktion' => 'abruf', 'von' => 'loxone')), 'off' => '');
     return array(
         'zendure_geraet' . $nr . '_befehle.xml',
         zd_xml_virtual_out(array(

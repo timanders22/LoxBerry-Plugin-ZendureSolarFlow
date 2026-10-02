@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.31 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.32 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,18 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Version 0.9.32
+
+Schreiber-Wache (Energie-1, Entscheidung 25).
+Gemessen mit Attrappen unter PHP 7.4 und 8.5 sowie in WSL; nicht am Gerät, nicht an einer echten Anlage.
+
+* **Kennung des Schreibers:** Schaltende Befehle nehmen ein optionales `&von=<kennung>` an, die Vorlage sendet `von=loxone`. Eine ungültige Kennung wird mit 400 `GRUND=VON` abgewiesen, ohne Schreibvorgang.
+* **Schreiber-Wache, ab Werk an:** Schreiben innerhalb von 15 Minuten mehrere Schreiber an dasselbe Gerät, meldet das Plugin es im Protokoll, im Reiter Test (24 h) und in der Antwort mit `;SCHREIBER=n`. Eine LoxBerry-Meldung dazu ist wählbar und ab Werk aus.
+* **„Fremde Schreiber abweisen“, ab Werk aus:** Eingeschaltet antwortet ein nicht erlaubter Schreiber mit 409 `GRUND=FREMDSCHREIBER`, nichts wird eingereiht. `aus` gilt dabei als Sollwert („Leerlauf halten“). Der Trockenlauf prüft die Sperre mit.
+* **Merker nicht nutzbar:** Der Befehl geht trotzdem, die Antwort trägt `;WACHE=MERKER`. Es gibt kein neues MQTT-Thema.
+
+**In Loxone:** nichts zu tun. Wer die Vorlage neu einliest, bekommt `von=loxone` an den Befehlen.
 
 ## Version 0.9.31
 
@@ -1451,6 +1463,7 @@ Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
 | `?token=T&aktion=grenzeein&watt=W` | obere Schranke für die Ladeleistung |
 | `?token=T&aktion=grenzeaus&watt=W` | obere Schranke für die Abgabeleistung |
 | `?token=T&aktion=abruf` | sofort abrufen |
+| `…&von=K` (an jedem schaltenden Aufruf, optional) | Kennung des Schreibers für die Schreiber-Wache (unten) |
 | `?selftest=1&token=T` | `SELFTEST;OK=1;TOKEN=OK` — prüft Erreichbarkeit und Token, **löst nichts aus** |
 
 **Ein Strich als Wert** heißt: das Gerät hat dieses Feld nicht geliefert. Es
@@ -1482,6 +1495,42 @@ Ein anderer Wert geht sofort an den Dienst, dort gilt weiter die
 Schreibbremse. `abruf` und `dry=1` sind nicht betroffen. Lässt sich der
 Merker dafür nicht öffnen, antwortet der Endpunkt mit HTTP 503
 `GRUND=GLEICHWERT_MERKER` und sendet nichts.
+
+**Schreiber-Wache:** Jeder schaltende Aufruf darf `&von=<kennung>` tragen
+(1 bis 32 Zeichen aus Buchstaben, Ziffern, `_` und `-`); die Loxone-Vorlage
+setzt am Ende jeder Befehlsadresse `von=loxone`. Kennungen der Hausplugins:
+`loxone`, `einspeisebremse`, `awattar`, `evcc`. Eine ungültige Kennung wird mit
+HTTP 400 `SET;OK=0;AKTION=…;GRUND=VON` abgewiesen, es wird nichts eingereiht;
+eine Adresse ohne `von` geht immer und erscheint als „ohne Kennung“. An den
+Sollwert-Befehlen (`laden`, `entladen`, `aus`, `socmin`, `socmax`, `grenzeaus`,
+`grenzeein`) merkt sich der Endpunkt je Gerät Kennung und Absenderadresse;
+`abruf` und lesende Aufrufe sind nicht betroffen.
+
+* **Melden (ab Werk an):** Schicken innerhalb des Zeitfensters (ab Werk 15 min,
+  einstellbar 1–120) mehrere Schreiber Sollwerte an dasselbe Gerät, steht das
+  gebremst im Protokoll, im Reiter *Test* (Tabelle „Schreiber der letzten 24
+  Stunden“) und in jeder weiteren Antwort als `;SCHREIBER=n` vor `MELDUNG`.
+  Abgewiesen wird nichts. Mit einem Schreiber bleibt die Antwort, wie sie war.
+  Auf Wunsch kommt eine LoxBerry-Meldung dazu, sobald neue Schreiber
+  hinzukommen (ab Werk aus).
+* **Fremde Schreiber abweisen (ab Werk aus):** Sollwerte eines Schreibers, der
+  nicht in der Liste der erlaubten Schreiber steht, bekommen HTTP 409
+  `SET;OK=0;AKTION=…;GRUND=FREMDSCHREIBER`, und nichts wird eingereiht; ein
+  Trockenlauf (`dry=1`) bekommt dieselbe Antwort mit `;DRY=1`. Die Liste nennt je
+  Eintrag eine Kennung, eine Adresse oder Kennung@Adresse (höchstens 16). Das gilt
+  auch für `aus`: beim Befehlssatz zensdk setzt es dieselben Werte wie `entladen`
+  mit 0 W, ist also ein Sollwert. Der Rückfall des Dienstes und die Knöpfe im
+  Reiter *Test* gehen nicht durch den Endpunkt und sind nicht betroffen. Erst
+  einschalten, wenn der Reiter *Test* eine Woche lang nur die erwarteten Schreiber
+  zeigt.
+* Lässt sich der Merker (im Datenordner, je Gerät) nicht schreiben, geht der
+  Befehl trotzdem hinaus; die Antwort trägt dann `;WACHE=MERKER`. Der Trockenlauf
+  merkt sich nichts, prüft die Sperre aber wie echt. Gleichwert-Unterdrückung und
+  Schreibbremse bleiben, wie sie waren. Ein neues MQTT-Thema gibt es nicht. Nach
+  einem Update beginnt die Wache leer.
+* Eine bestehende Einbindung ohne `von=loxone` arbeitet weiter. Es genügt, an die
+  bestehenden Befehle `&von=loxone` anzuhängen, statt die Vorlage neu zu
+  importieren — ein Neuimport legt die Befehle doppelt an.
 
 Jeder schaltende Aufruf nimmt zusätzlich **`&dry=1`**: dann wird der Befehl
 vollständig fertiggerechnet und **nicht** gesendet; die Antwort nennt die

@@ -47,6 +47,17 @@
  * 429). Ohne nutzbaren Merker: 503 GRUND=GLEICHWERT_MERKER, nichts
  * eingereiht. Die Schreibbremse des Dienstes bleibt.
  *
+ * Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25): jeder schaltende Aufruf
+ * nimmt optional &von=<kennung> (1 bis 32 Zeichen aus A-Z a-z 0-9 _ -; die Vorlage
+ * setzt von=loxone). Eine ungueltige Kennung: HTTP 400 SET;OK=0;AKTION=..;GRUND=VON,
+ * nichts eingereiht. An den Sollwert-Befehlen (alle schaltenden ausser abruf) merkt
+ * sich der Endpunkt je Geraet Kennung@Absender; mehr als ein Schreiber im Fenster (ab
+ * Werk 15 min): Protokoll, Reiter Test, Antwort ;SCHREIBER=n vor MELDUNG - abgewiesen
+ * wird nichts. Nur mit "Fremde Schreiber abweisen" (ab Werk aus) bekommt ein nicht
+ * erlaubter Schreiber HTTP 409 SET;OK=0;AKTION=..;GRUND=FREMDSCHREIBER, auch im
+ * Trockenlauf (dann ;DRY=1), und nichts wird eingereiht. Merker nicht nutzbar: der
+ * Befehl geht trotzdem, ;WACHE=MERKER. Lesende Aufrufe bleiben unberuehrt.
+ *
  * Jeder schaltende Aufruf nimmt zusaetzlich &dry=1: dann wird der Befehl
  * vollstaendig fertiggerechnet - Grenzen, Rasterung, Befehlssatz, Nutzlast -
  * und NICHT gesendet. Die Antwort nennt die fertige Nutzlast. Dafuer muss die
@@ -203,6 +214,23 @@ $zd_prozent = zd_param('prozent', '/^[0-9]{1,3}\z/', '');
 /* Trockenlauf: rechnet den Befehl vollstaendig fertig und sendet ihn NICHT.
  * Nur 0 oder 1 - alles andere wird abgewiesen wie jeder andere Parameter. */
 $zd_dry     = zd_param('dry', '/^[01]\z/', '0') === '1';
+
+/* Schreiber-Wache (Energie-1 C1): &von= lesen, nur an schaltenden Aktionen - lesende
+ * bleiben, wie sie waren. Fehlt es: '' (ohne Kennung). Eine Kennung, die nicht ins
+ * Muster passt (1..32 aus A-Z a-z 0-9 _ -, auch leer, als Liste oder mit Zeilenumbruch),
+ * wird abgewiesen wie ein falscher Wert - abweisen statt zurechtbiegen (Nr. 19); ein
+ * Tippfehler faellt beim Einrichten auf. Eine Adresse OHNE von geht immer. */
+$zd_von = '';
+if (in_array($zd_aktion, $zd_schaltend, true) && isset($_GET['von'])) {
+    $zd_von = is_string($_GET['von']) ? $_GET['von'] : '';
+    if (!zd_wache_kennung_gueltig($zd_von)) {
+        zd_ep_abweisung('VON', $zd_aktion);
+        http_response_code(400);
+        echo 'SET;OK=0;AKTION=' . $zd_aktion . ";GRUND=VON;ERLAUBT=A-Z,a-z,0-9,_,-;LAENGE=1..32\n";
+        echo "Der Wert von von ist keine gueltige Kennung (1 bis 32 Zeichen aus Buchstaben, Ziffern, _ und -) - es wurde nichts eingereiht.\n";
+        exit;
+    }
+}
 
 /** Ein Strich statt einer erfundenen 0. Loxone behaelt dann den letzten Wert. */
 function zd_w($v)
@@ -447,6 +475,24 @@ if (zd_dienst_pid() === 0) {
     exit;
 }
 
+/* ---------------- Schreiber-Wache (Energie-1 C1) ----------------
+ *
+ * Nach Geraet (404), Freigabe (403) und Dienst (503), VOR der Gleichwert-Unterdrueckung:
+ * auch ein Befehl, der als unveraendert beantwortet wird, kommt von einem Schreiber. Die
+ * Unterdrueckung selbst bleibt, wie sie war. Ein abgewiesener Befehl wird nicht
+ * eingereiht und oeffnet den Gleichwert-Merker nicht. abruf geht vorbei. */
+$zd_wz = '';
+if (zd_wache_gilt($zd_aktion)) {
+    list($zd_wab, $zd_wz) = zd_wache_anwenden($zd_ger[$zd_nr], $zd_aktion, $zd_von, $zd_dry);
+    if ($zd_wab) {
+        zd_ep_abweisung('FREMDSCHREIBER', $zd_aktion);
+        http_response_code(409);
+        echo 'SET;OK=0;AKTION=' . $zd_aktion . ';GRUND=FREMDSCHREIBER' . ($zd_dry ? ';DRY=1' : '') . "\n";
+        echo "Dieser Schreiber steht nicht in der Liste der erlaubten Schreiber (Reiter Einstellungen, Schreiber-Wache) - es wurde nichts eingereiht.\n";
+        exit;
+    }
+}
+
 /* Sofortabruf mit Bremse (Befund Code 7, 29.09.2026; Regeln/03 "Jeder
  * Ausloeser, den eine fremde Anlage bedient, braucht eine Bremse"): bis
  * 0.9.27 ergaben 10 Aufrufe in 2 s zehn Geraeteabrufe mit je fuenf
@@ -496,7 +542,7 @@ if ($zd_gw_schl !== '') {
     if ($zd_gw === false) {
         zd_ep_abweisung('GLEICHWERT_MERKER', $zd_aktion);
         http_response_code(503);
-        echo 'SET;OK=0;AKTION=' . $zd_aktion . ";GRUND=GLEICHWERT_MERKER\n";
+        echo zd_wache_zeile('SET;OK=0;AKTION=' . $zd_aktion . ";GRUND=GLEICHWERT_MERKER\n", $zd_wz);
         echo "Der Merker der Gleichwert-Unterdrueckung laesst sich nicht oeffnen - es wurde nichts gesendet. Protokoll im Reiter Logdateien.\n";
         exit;
     }
@@ -504,8 +550,8 @@ if ($zd_gw_schl !== '') {
     $zd_seit = zd_gleichwert_seit($zd_gw_merker, $zd_gw_schl, $zd_gw_wert);
     if ($zd_seit >= 0) {
         zd_gleichwert_schliessen($zd_gw, null);
-        printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
-            $zd_aktion, $zd_seit, $zd_seit);
+        echo zd_wache_zeile(sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
+            $zd_aktion, $zd_seit, $zd_seit), $zd_wz);
         exit;
     }
 }
@@ -517,5 +563,6 @@ if ($zd_gw !== null) {
 if ($zd_erg === 0) {
     http_response_code(500);
 }
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $zd_erg, $zd_aktion,
-    str_replace(array("\r", "\n", ';'), ' ', $zd_meldung));
+// Schreiber-Wache (Energie-1 C1): ;SCHREIBER=n / ;WACHE=MERKER vor MELDUNG.
+echo zd_wache_zeile(sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $zd_erg, $zd_aktion,
+    str_replace(array("\r", "\n", ';'), ' ', $zd_meldung)), $zd_wz);

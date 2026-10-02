@@ -542,6 +542,29 @@ if ($zd_post && isset($_POST['speichern'])) {
     $zd_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $zd_cfg['schutz_ein']    = isset($_POST['schutz_ein']) ? 1 : 0;
     $zd_cfg['energie_ein']   = isset($_POST['energie_ein']) ? 1 : 0;
+
+    /* Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25). Das Fenster prueft die Schleife
+     * ueber zd_grenzen() oben - dieselbe Tabelle wie das Zurueckspielen -, die Liste
+     * zd_wache_liste_mangel(), die auch zd_sicherung_wert_pruefen() benutzt. Abgewiesen statt
+     * zurechtgebogen (Nr. 16/19): nichts wird gespeichert, das Feld ist markiert, die Eingabe
+     * kommt zurueck (X-2). Still bleibt nur Leerraum am Rand. */
+    $zd_cfg['wache_ein']         = isset($_POST['wache_ein']) ? 1 : 0;
+    $zd_cfg['wache_lb_melden']   = isset($_POST['wache_lb_melden']) ? 1 : 0;
+    $zd_cfg['wache_sperren_ein'] = isset($_POST['wache_sperren_ein']) ? 1 : 0;
+    $zd_wer = isset($_POST['wache_erlaubt']) ? $_POST['wache_erlaubt'] : '';
+    $zd_wer = is_string($zd_wer) ? trim($zd_wer) : $zd_wer;
+    $zd_wm = zd_wache_liste_mangel($zd_wer);
+    if ($zd_wm !== '') {
+        $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_WACHE_LISTE'), $zd_wm);
+        $zd_bean[] = 'wache_erlaubt';
+    } elseif (zd_wache_kreuz(array('wache_sperren_ein' => $zd_cfg['wache_sperren_ein'], 'wache_erlaubt' => $zd_wer))) {
+        // Kreuzpruefung: Sperren an ohne erlaubten Schreiber wiese auch Loxone ab.
+        $zd_fehler[] = zd_t('EINST.FEHLER_WACHE_LEER');
+        $zd_bean[] = 'wache_sperren_ein';
+        $zd_bean[] = 'wache_erlaubt';
+    } else {
+        $zd_cfg['wache_erlaubt'] = $zd_wer;
+    }
     /* Temperaturschwellen duerfen negativ sein und Nachkommastellen haben -
      * sie stehen in der EINGESTELLTEN Einheit, und die kann roh sein. */
     foreach (array('schutz_temp_min', 'schutz_temp_max') as $zd_tf) {
@@ -1413,6 +1436,40 @@ foreach (array(
   <input data-role="none" type="number" id="energie_monate" name="energie_monate"<?= zd_markierung('energie_monate') ?> value="<?= zd_e((string) $zd_cfg['energie_monate']) ?>" min="1" max="120">
 </div>
 
+<?php /* Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25): melden ab Werk an, sperren
+         ab Werk aus. Steht immer da - gemerkt wird nur, was der Endpunkt annimmt. */ ?>
+<h2><?= zd_e(zd_t('EINST.H_WACHE')) ?></h2>
+<div class="sm-hinweis"><?= zd_t('EINST.WACHE_ERKLAERUNG') ?></div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="wache_ein" value="1"<?= zd_markierung('wache_ein') ?> <?= !empty($zd_cfg['wache_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('EINST.L_WACHE_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="wache_fenster_min"><?= zd_e(zd_t('EINST.L_WACHE_FENSTER_MIN')) ?></label>
+  <input data-role="none" type="number" id="wache_fenster_min" name="wache_fenster_min"<?= zd_markierung('wache_fenster_min') ?> value="<?= zd_e((string) $zd_cfg['wache_fenster_min']) ?>" min="1" max="120">
+  <div class="sm-hilfe"><?= zd_t('EINST.H_WACHE_FENSTER') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="wache_lb_melden" value="1"<?= zd_markierung('wache_lb_melden') ?> <?= !empty($zd_cfg['wache_lb_melden']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('EINST.L_WACHE_LB')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="wache_sperren_ein" value="1"<?= zd_markierung('wache_sperren_ein') ?> <?= !empty($zd_cfg['wache_sperren_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('EINST.L_WACHE_SPERREN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= zd_t('EINST.H_WACHE_SPERREN') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wache_erlaubt"><?= zd_e(zd_t('EINST.L_WACHE_ERLAUBT')) ?></label>
+  <input data-role="none" type="text" id="wache_erlaubt" name="wache_erlaubt"<?= zd_markierung('wache_erlaubt') ?> value="<?= zd_e((string) $zd_cfg['wache_erlaubt']) ?>" placeholder="loxone" size="40">
+  <div class="sm-hilfe"><?= zd_t('EINST.H_WACHE_ERLAUBT') ?></div>
+</div>
+
 <?php /* Broker und MQTT standen hier bis zu dieser Fassung.
          Beides wohnt jetzt vollstaendig im Reiter MQTT. */ ?>
 <div class="sm-knopfreihe">
@@ -1689,12 +1746,13 @@ foreach (array(
     array('LOX.T_VA_ABRUF',     'abruf',     array()),
 ) as $zd_va) { ?>
 <tr><td><?= zd_e(zd_t($zd_va[0])) ?></td>
-    <td><span class="sm-mono"><?= zd_e(zd_endpunkt_pfad(array('aktion' => $zd_va[1]) + $zd_va[2], true)) ?></span></td></tr>
+    <td><span class="sm-mono"><?= zd_e(zd_endpunkt_pfad(array('aktion' => $zd_va[1]) + $zd_va[2] + array('von' => 'loxone'), true)) ?></span></td></tr>
 <?php } ?>
 <tr><td><?= zd_e(zd_t('LOX.T_VA_SELFTEST')) ?></td>
     <td><span class="sm-mono"><?= zd_e(zd_endpunkt_pfad(array('selftest' => 1))) ?></span></td></tr>
 </table>
 <div class="sm-hinweis"><?= zd_t('LOX.S4_VORLAGE') ?></div>
+<div class="sm-hinweis"><?= zd_t('LOX.VON_HINWEIS') ?></div>
 <div class="sm-warnung"><?= zd_t('LOX.S4_WARNUNG') ?></div>
 </div>
 
@@ -1820,6 +1878,47 @@ function zd_bausteine()
 ?></td><td><?= $zd_z['frage'] ?></td><td><?= $zd_z['antwort'] ?></td></tr>
 <?php } ?>
 </table>
+
+<?php
+/* Schreiber der letzten 24 Stunden (Energie-1 C1), je Geraet frisch aus dem Merker gelesen
+   (LOCK_SH); die Einstellungen aus der Datei - nicht aus der X-2-Rueckfuellung. */
+$zd_wtw = zd_wache_einstellungen(zd_config());
+$zd_wtz = array();
+$zd_wtm = array();
+foreach (zd_geraete() as $zd_wg) {
+    list($zd_wst, $zd_wls) = zd_wache_lesen($zd_wg);
+    if ($zd_wst === 'merker') {
+        $zd_wtm[] = zd_wache_datei($zd_wg['nr']);
+    }
+    foreach ($zd_wls as $zd_wx) {
+        $zd_wx['geraet'] = $zd_wg['nr'] . ' ' . $zd_wg['name'];
+        $zd_wtz[] = $zd_wx;
+    }
+} ?>
+<h3><?= zd_e(zd_t('TEST.H_WACHE_TABELLE')) ?></h3>
+<?php foreach ($zd_wtm as $zd_wf) { ?>
+<div class="sm-fehler"><?= sprintf(zd_t('TEST.A_WACHE_MERKER'), zd_e($zd_wf)) ?></div>
+<?php } ?>
+<?php if (!$zd_wtz) { ?>
+<div class="sm-hilfe"><?= zd_t('TEST.A_WACHE_TABELLE_LEER') ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= zd_e(zd_t('TEST.T_W_GERAET')) ?></th><th><?= zd_e(zd_t('TEST.T_W_KENNUNG')) ?></th><th><?= zd_e(zd_t('TEST.T_W_ABSENDER')) ?></th><th><?= zd_e(zd_t('TEST.T_W_BEFEHL')) ?></th><th><?= zd_e(zd_t('TEST.T_W_ZUERST')) ?></th><th><?= zd_e(zd_t('TEST.T_W_ZULETZT')) ?></th><th><?= zd_e(zd_t('TEST.T_W_ANZAHL')) ?></th><th><?= zd_e(zd_t('TEST.T_W_ABGEWIESEN')) ?></th><th><?= zd_e(zd_t('TEST.T_W_FENSTER')) ?></th></tr>
+<?php foreach ($zd_wtz as $zd_wx) { ?>
+<tr><td><?= zd_e($zd_wx['geraet']) ?></td>
+    <td><?= $zd_wx['von'] !== '' ? '<span class="sm-mono">' . zd_e($zd_wx['von']) . '</span>' : zd_e(zd_t('TEST.W_OHNE_KENNUNG')) ?></td>
+    <td><span class="sm-mono"><?= zd_e($zd_wx['ip'] !== '' ? $zd_wx['ip'] : '?') ?></span></td>
+    <td><span class="sm-mono"><?= zd_e($zd_wx['art']) ?></span></td>
+    <td><?= zd_e(date('d.m. H:i:s', $zd_wx['erst'])) ?></td>
+    <td><?= zd_e(date('d.m. H:i:s', $zd_wx['zuletzt'])) ?></td>
+    <td><?= (int) $zd_wx['n'] ?></td>
+    <td><?= (int) $zd_wx['abgewiesen'] ?></td>
+    <td><?= zd_e(zd_t(abs(time() - $zd_wx['zuletzt']) < 60 * $zd_wtw['wache_fenster_min'] ? 'TEST.W_JA' : 'TEST.W_NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
 
 <?php foreach ($zd_werte as $zd_nr => $zd_w) {
     if (empty($zd_w['packliste'])) { continue; } ?>

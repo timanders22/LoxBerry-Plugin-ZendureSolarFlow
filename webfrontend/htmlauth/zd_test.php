@@ -343,6 +343,53 @@ function zd_pruefungen()
     $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_BREMSE'),
         sprintf(zd_t('TEST.A_BREMSE'), (int) $cfg['schreibbremse'], (int) $cfg['schrittweite']));
 
+    /* ---- Schreiber-Wache (Energie-1 C1, Entscheidung Nr. 25) ----
+     * Ueber eine leere Menge wird nicht geurteilt: kein Befehl im Fenster ist ein Hinweis,
+     * kein Haken. Ein Schreiber ist ein Haken, mehrere sind ein Hinweis (die Wache meldet,
+     * sie urteilt nicht), ein unlesbarer Merker ist ein Kreuz. Die Einstellungen kommen aus
+     * $cfg = zd_config(), also frisch aus der Datei. Die Tabelle der Schreiber steht unter
+     * der Selbstpruefung. */
+    $zd_ww = zd_wache_einstellungen($cfg);
+    if ($zd_ww['wache_ein'] !== 1) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_WACHE_ALLE'), zd_t('TEST.A_WACHE_AUS'));
+    } elseif (!$geraete) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_WACHE_ALLE'), zd_t('TEST.A_WACHE_KEIN_GERAET'));
+    } else {
+        foreach ($geraete as $zd_wg) {
+            $zd_wfr = sprintf(zd_t('TEST.F_WACHE'), zd_e($zd_wg['name']));
+            list($zd_wzs, $zd_wls) = zd_wache_lesen($zd_wg);
+            $zd_wim = array();
+            foreach ($zd_wls as $zd_wx) {
+                if (abs(time() - $zd_wx['zuletzt']) < 60 * $zd_ww['wache_fenster_min']) {
+                    $zd_wim[] = $zd_wx;
+                }
+            }
+            if ($zd_wzs === 'merker') {
+                $zeilen[] = zd_pruefzeile(0, $zd_wfr, sprintf(zd_t('TEST.A_WACHE_MERKER'), zd_e(zd_wache_datei($zd_wg['nr']))));
+            } elseif (!$zd_wim) {
+                $zeilen[] = zd_pruefzeile(-1, $zd_wfr, sprintf(zd_t('TEST.A_WACHE_LEER'), $zd_ww['wache_fenster_min']));
+            } elseif (count($zd_wim) === 1) {
+                $zeilen[] = zd_pruefzeile(1, $zd_wfr, sprintf(zd_t('TEST.A_WACHE_EINER'),
+                    zd_e(zd_wache_name($zd_wim[0], zd_t('TEST.W_OHNE_KENNUNG'))), $zd_ww['wache_fenster_min']));
+            } else {
+                $zd_wn = array();
+                foreach ($zd_wim as $zd_wx) {
+                    $zd_wn[] = zd_wache_name($zd_wx, zd_t('TEST.W_OHNE_KENNUNG'));
+                }
+                $zeilen[] = zd_pruefzeile(-1, $zd_wfr, sprintf(zd_t('TEST.A_WACHE_MEHRERE'), count($zd_wim),
+                    $zd_ww['wache_fenster_min'], zd_e(implode(', ', $zd_wn))));
+            }
+        }
+    }
+    if ($zd_ww['wache_sperren_ein'] !== 1) {
+        $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_WACHE_SPERRE'), zd_t('TEST.A_WACHE_SPERRE_AUS'));
+    } else {
+        list(, , $zd_wsf) = zd_wache_sperre_urteil($zd_ww, '', '');
+        $zeilen[] = ($zd_wsf !== '')
+            ? zd_pruefzeile(0, zd_t('TEST.F_WACHE_SPERRE'), zd_t('TEST.A_WACHE_SPERRE_LISTE'))
+            : zd_pruefzeile(1, zd_t('TEST.F_WACHE_SPERRE'), sprintf(zd_t('TEST.A_WACHE_SPERRE_AN'), zd_e($zd_ww['wache_erlaubt'])));
+    }
+
     // --- Energiezaehler ---
     if (empty($cfg['energie_ein'])) {
         $zeilen[] = zd_pruefzeile(-1, zd_t('TEST.F_ENERGIE'), zd_t('TEST.A_ENERGIE_AUS'));
