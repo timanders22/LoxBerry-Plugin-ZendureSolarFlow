@@ -1164,6 +1164,7 @@ $zd_vtag = (isset($_GET['tag']) && preg_match('/^[0-9]{8}$/', (string) $_GET['ta
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $zd_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= zd_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= zd_e(zd_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('EINST.DIENST_ERKLAERUNG') ?></p>
