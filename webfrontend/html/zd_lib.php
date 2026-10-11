@@ -4789,6 +4789,48 @@ function zd_status_felder()
     );
 }
 
+/**
+ * Titel und Namen der Vorlagen - EINE Quelle (Welle Bild 9 VOLL, 0.9.35).
+ *
+ * Die Vorlagen (zd_vorlage(), zd_vorlage_energie(), zd_vorlage_befehle()) und die beiden
+ * Baustein-Listen im Reiter "Einbindung in Loxone" nennen sie von hier. Bis 0.9.34 standen die
+ * Zeichenketten fest in den Vorlagen; eine Liste, die sie abschreibt, laeuft nach der naechsten
+ * Aenderung still auseinander.
+ */
+function zd_vorlage_titel($nummer = 1)
+{
+    return 'Zendure SolarFlow ' . (int) $nummer;
+}
+
+function zd_vorlage_energie_titel($nummer = 1, $zeitraum = 'tag')
+{
+    return 'Zendure Energie ' . (int) $nummer . ' ' . $zeitraum;
+}
+
+function zd_vorlage_befehle_titel($nummer = 1)
+{
+    return 'Zendure SolarFlow ' . (int) $nummer . ' Befehle';
+}
+
+/** Name eines Messwerts der Vorlage zd_vorlage(), z. B. ZENDURE_1_SOC. */
+function zd_vi_name($nummer, $feld)
+{
+    return 'ZENDURE_' . (int) $nummer . '_' . $feld;
+}
+
+/** Name eines Energiewerts der Vorlage zd_vorlage_energie(), z. B. ZENDURE_1_ET_PV. */
+function zd_ve_name($nummer, $zeitraum, $feld)
+{
+    $kurz = array('tag' => 'T', 'monat' => 'M', 'jahr' => 'J');
+    return 'ZENDURE_' . (int) $nummer . '_E' . $kurz[$zeitraum] . '_' . $feld;
+}
+
+/** Name eines Steuerbefehls der Vorlage zd_vorlage_befehle(); der Sofortabruf gilt fuer alle Geraete. */
+function zd_vq_name($nummer, $befehl)
+{
+    return $befehl === 'ABRUF' ? 'ZENDURE_CMD_ABRUF' : 'ZENDURE_' . (int) $nummer . '_CMD_' . $befehl;
+}
+
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function zd_vorlage($nummer = 1)
 {
@@ -4797,7 +4839,7 @@ function zd_vorlage($nummer = 1)
     foreach (zd_status_felder() as $feld => $info) {
         $bedeutung = zd_status_kurz($feld);   // Kurztext, siehe zd_status_felder()
         $cmds[] = array(
-            'title'   => 'ZENDURE_' . $nummer . '_' . $feld,
+            'title'   => zd_vi_name($nummer, $feld),
             'comment' => $bedeutung . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
             'check'   => zd_check($feld),
             'einheit' => $info[0],
@@ -4808,7 +4850,7 @@ function zd_vorlage($nummer = 1)
     return array(
         'zendure_geraet' . (int) $nummer . '.xml',
         zd_xml_virtual_in_http(array(
-            'title'   => 'Zendure SolarFlow ' . (int) $nummer,
+            'title'   => zd_vorlage_titel($nummer),
             'address' => $adresse,
             'polling' => '60',
             'comment' => sprintf(zd_vorlagentext('LOX.VI_KOPF'), date('d.m.Y')),
@@ -4847,12 +4889,11 @@ function zd_vorlage_energie($nummer = 1, $zeitraum = 'tag')
 {
     $p = zd_paths();
     $zeitraum = in_array($zeitraum, array('tag', 'monat', 'jahr'), true) ? $zeitraum : 'tag';
-    $kurz = array('tag' => 'T', 'monat' => 'M', 'jahr' => 'J');
     $cmds = array();
     foreach (zd_energie_felder() as $feld => $info) {
         $bedeutung = zd_vorlagentext($info[1]);
         $cmds[] = array(
-            'title'   => 'ZENDURE_' . (int) $nummer . '_E' . $kurz[$zeitraum] . '_' . $feld,
+            'title'   => zd_ve_name($nummer, $zeitraum, $feld),
             'comment' => $bedeutung . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
             'check'   => zd_check($feld),
             'einheit' => $info[0],
@@ -4864,7 +4905,7 @@ function zd_vorlage_energie($nummer = 1, $zeitraum = 'tag')
     return array(
         'zendure_geraet' . (int) $nummer . '_energie_' . $zeitraum . '.xml',
         zd_xml_virtual_in_http(array(
-            'title'   => 'Zendure Energie ' . (int) $nummer . ' ' . $zeitraum,
+            'title'   => zd_vorlage_energie_titel($nummer, $zeitraum),
             'address' => $adresse,
             'polling' => '300',
             'comment' => sprintf(zd_vorlagentext('LOX.VI_KOPF'), date('d.m.Y')),
@@ -4956,7 +4997,7 @@ function zd_vorlage_befehle($nummer = 1)
         array('GRENZEEIN', 'grenzeein', '', 'LOX.VQ_GRENZEEIN', array('watt' => '<v>')),
     ) as $c) {
         $cmds[] = array(
-            'title'   => 'ZENDURE_' . $nr . '_CMD_' . $c[0],
+            'title'   => zd_vq_name($nr, $c[0]),
             'comment' => zd_vorlagentext($c[3]),
             /* Energie-1 C1: von=loxone, damit die Schreiber-Wache den Miniserver von
              * anderen Schreibern unterscheidet - am Ende der Adresse, so wie man es an
@@ -4968,16 +5009,16 @@ function zd_vorlage_befehle($nummer = 1)
         );
     }
     // Digitalbefehle: Ein loest aus, ein Gegenstueck gibt es nicht.
-    $cmds[] = array('title' => 'ZENDURE_' . $nr . '_CMD_AUS', 'analog' => 0,
+    $cmds[] = array('title' => zd_vq_name($nr, 'AUS'), 'analog' => 0,
                     'comment' => zd_vorlagentext('LOX.VQ_AUS'),
                     'on' => zd_endpunkt_pfad(array('aktion' => 'aus', 'geraet' => $nr, 'von' => 'loxone')), 'off' => '');
-    $cmds[] = array('title' => 'ZENDURE_CMD_ABRUF', 'analog' => 0,
+    $cmds[] = array('title' => zd_vq_name($nr, 'ABRUF'), 'analog' => 0,
                     'comment' => zd_vorlagentext('LOX.VQ_ABRUF'),
                     'on' => zd_endpunkt_pfad(array('aktion' => 'abruf', 'von' => 'loxone')), 'off' => '');
     return array(
         'zendure_geraet' . $nr . '_befehle.xml',
         zd_xml_virtual_out(array(
-            'title'   => 'Zendure SolarFlow ' . $nr . ' Befehle',
+            'title'   => zd_vorlage_befehle_titel($nr),
             'address' => 'http://' . $host,
             'comment' => zd_vorlagentext('LOX.VQ_KOPF'),
         ), $cmds),

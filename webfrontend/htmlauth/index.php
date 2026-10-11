@@ -1040,6 +1040,13 @@ if ($zd_rahmen) {
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
     font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto;
     white-space: pre-wrap; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 9 VOLL: Schritte und Hinweise je Baustein-Liste. */
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -1779,76 +1786,193 @@ foreach (array(
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die kompletten Baustein-Listen. Pflicht im Hausstandard.
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Welle Bild 9 VOLL (0.9.35, Hausherr 11.10.2026: "Vollausstattung, ein absoluter Laie soll das
+ * maximal Moegliche leicht integrieren koennen"): zwei Seiten aus dem LoxBerry-Plugins
+ * Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Zendure SolarFlow" und "Zendure SolarFlow
+ * Steuerung"). Eine Zeile = ein Baustein, deutsch wortgleich; Bausteinnamen auch auf Englisch
+ * deutsch wie im Musterprojekt. Bis 0.9.34 stand hier eine eigene Liste mit 28 Zeilen
+ * (Ueberwachung ueber ALTER, Regelkreis mit Taster, Vergleicher und Impulsgeber).
  *
- * Typ und Name stehen als Sprachschluessel drin, die Eingangsspalte ist
- * symbolisch und damit sprachfrei. Die Parameterspalte traegt dagegen den
- * FERTIGEN Text: die acht Befehlserkennungen der virtuellen Eingaenge
- * standen bis 0.9.12 achtmal ausgeschrieben in beiden Sprachdateien - und
- * zwar ohne das fuehrende Semikolon, das die Vorlage seit 0.9.11 setzt.
- * Wer die Tabelle abtippte statt die Vorlage zu importieren, bekam damit
- * genau den Fehler zurueck, der dort behoben worden war: \iLADEN=\i\v
- * findet in ...;ENTLADEN=250;LADEN=0 die falsche Stelle. Sie kommen jetzt
- * aus zd_check(), derselben Funktion, aus der auch die Vorlage baut.
+ * Namen und Vorlagentitel kommen aus denselben Funktionen wie die Vorlagen (zd_vi_name(),
+ * zd_ve_name(), zd_vq_name(), zd_vorlage_titel() ... in zd_lib.php), fuer Geraet 1 wie die
+ * Vorlagen-Knoepfe ab Werk. Jede Zelle ist fertiges, maskiertes HTML.
+ * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge).
  */
-function zd_bausteine()
+function zd_bl($k)
 {
-    return array(
-        array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('SOC')), '&mdash;'),
-        array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('PV')), '&mdash;'),
-        array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('BATP')), '&mdash;'),
-        array(4,  'BAUSTEIN.T_VE',      'BAUSTEIN.N04',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('HAUS')), '&mdash;'),
-        array(5,  'BAUSTEIN.T_VE',      'BAUSTEIN.N05',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('NETZ')), '&mdash;'),
-        array(6,  'BAUSTEIN.T_VE',      'BAUSTEIN.N06',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('DVOLT')), '&mdash;'),
-        array(7,  'BAUSTEIN.T_VE',      'BAUSTEIN.N07',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('ALTER')), '&mdash;'),
-        array(8,  'BAUSTEIN.T_VE',      'BAUSTEIN.N08',
-              sprintf(zd_t('BAUSTEIN.P_CHECK'), zd_check('OK')), '&mdash;'),
-        array(9,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N09', zd_t('BAUSTEIN.P09'), 'Ausgang von #7'),
-        array(10, 'BAUSTEIN.T_NICHT',   'BAUSTEIN.N10', '',             'Ausgang von #8'),
-        array(11, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N11', '',             'I1 = #9, I2 = #10'),
-        array(12, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N12', zd_t('BAUSTEIN.P12'), 'Ausgang von #11'),
-        array(13, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N13', zd_t('BAUSTEIN.P13'), 'Ausgang von #12'),
-        array(14, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N14', zd_t('BAUSTEIN.P14'), 'Ausgang von #6'),
-        array(15, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N15', zd_t('BAUSTEIN.P15'), 'Ausgang von #14'),
-        array(16, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N16', zd_t('BAUSTEIN.P16'), 'V1 = #1, V2 = #3'),
-        array(17, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N17', zd_t('BAUSTEIN.P17'), '&mdash;'),
-        array(18, 'BAUSTEIN.T_FORMEL',  'BAUSTEIN.N18', zd_t('BAUSTEIN.P18'), 'I1 &larr; ' . zd_t('BAUSTEIN.ZAEHLER')),
-        array(19, 'BAUSTEIN.T_FORMEL',  'BAUSTEIN.N19', zd_t('BAUSTEIN.P19'), 'I1 &larr; ' . zd_t('BAUSTEIN.ZAEHLER')),
-        array(20, 'BAUSTEIN.T_VEZ',     'BAUSTEIN.N20', zd_t('BAUSTEIN.P20'), '&mdash;'),
-        array(21, 'BAUSTEIN.T_VERGL',   'BAUSTEIN.N21', zd_t('BAUSTEIN.P21'), 'I1 = #1, I2 = #20'),
-        array(22, 'BAUSTEIN.T_FORMEL',  'BAUSTEIN.N22', zd_t('BAUSTEIN.P22'), 'I1 = #18, I2 = #21, I3 = #17'),
-        array(23, 'BAUSTEIN.T_FORMEL',  'BAUSTEIN.N23', zd_t('BAUSTEIN.P23'), 'I1 = #19, I2 = #17'),
-        array(24, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N24', zd_t('BAUSTEIN.P24'), '&mdash;'),
-        array(25, 'BAUSTEIN.T_ANALOGSP','BAUSTEIN.N25', zd_t('BAUSTEIN.P25'), 'Input = #22, ' . zd_t('BAUSTEIN.TRIGGER') . ' = #24'),
-        array(26, 'BAUSTEIN.T_ANALOGSP','BAUSTEIN.N26', zd_t('BAUSTEIN.P26'), 'Input = #23, ' . zd_t('BAUSTEIN.TRIGGER') . ' = #24'),
-        array(27, 'BAUSTEIN.T_VA',      'BAUSTEIN.N27', zd_t('BAUSTEIN.P27'), 'Ausgang von #25'),
-        array(28, 'BAUSTEIN.T_VA',      'BAUSTEIN.N28', zd_t('BAUSTEIN.P28'), 'Ausgang von #26'),
-    );
+    return zd_e(zd_t('BAUSTEIN.' . $k));
+}
+
+function zd_bl_ein($nr)
+{
+    return zd_e(sprintf(zd_t('BAUSTEIN.E_EIN'), $nr));
+}
+
+function zd_bl_aus($ausgang, $nr)
+{
+    return zd_e(sprintf(zd_t('BAUSTEIN.E_AUSGANG'), $ausgang, $nr));
+}
+
+/** Eine Zeile mit einem Befehl aus einer Vorlage: Typ mit dem Vorlagentitel, Name aus der Vorlage. */
+function zd_bl_vorlage($nr, $typ, $titel, $name, $param, $ein)
+{
+    return array($nr, zd_e(sprintf(zd_t('BAUSTEIN.' . $typ), $titel)), zd_e($name),
+                 $param === '' ? '&mdash;' : zd_bl($param), $ein);
+}
+
+/** Seite "Zendure SolarFlow": Werte, Meldungen und Bilanz (32 Bausteine). */
+function zd_bausteine_werte($g = 1)
+{
+    $vi = zd_vorlage_titel($g);
+    $ve = zd_vorlage_energie_titel($g, 'tag');
+    $m = '&mdash;';
+    $z = array();
+    foreach (array(1 => 'OK', 2 => 'ZAEHLER', 3 => 'SOC', 4 => 'BATP', 5 => 'PV', 6 => 'HAUS') as $n => $f) {
+        $z[] = zd_bl_vorlage($n, 'T_VIBEF', $vi, zd_vi_name($g, $f), sprintf('W%02d_PARAM', $n), $m);
+    }
+    $z[] = array(7,  zd_bl('T_KONSTANTE'), zd_bl('W07_NAME'), zd_bl('W07_PARAM'), $m);
+    $z[] = array(8,  zd_bl('T_STATUS'), zd_bl('W08_NAME'), zd_bl('W08_PARAM'), 'V1 = #3, V2 = #4, V3 = #5, V4 = #6');
+    $z[] = array(9,  zd_bl('T_NICHT'), zd_bl('W09_NAME'), $m, 'I = #1');
+    $z[] = array(10, zd_bl('T_VALID'), zd_bl('W10_NAME'), zd_bl('W10_PARAM'), 'V = #2, En = #7');
+    $z[] = array(11, zd_bl('T_ODER'), zd_bl('W11_NAME'), $m, 'I1 = #9, I2 = ' . zd_bl_aus('E', 10));
+    $z[] = array(12, zd_bl('T_EVZ'), zd_bl('W12_NAME'), zd_bl('W12_PARAM'), zd_bl_ein(11));
+    $z[] = array(13, zd_bl('T_BENACHR'), zd_bl('W13_NAME'), zd_bl('W13_PARAM'), zd_bl_ein(12));
+    foreach (array(14 => 'SOCMIN', 15 => 'SOCMAX', 16 => 'GRENZEAUS', 17 => 'GRENZEEIN', 18 => 'ACMODUS',
+                   19 => 'TEMP') as $n => $f) {
+        $z[] = zd_bl_vorlage($n, 'T_VIBEF', $vi, zd_vi_name($g, $f), sprintf('W%02d_PARAM', $n), $m);
+    }
+    $z[] = array(20, zd_bl('T_STATUS'), zd_bl('W20_NAME'), zd_bl('W20_PARAM'),
+                 'V1 = #14, V2 = #15, V3 = #16, V4 = #17, V5 = #18');
+    $z[] = array(21, zd_bl('T_SWS'), zd_bl('W21_NAME'), zd_bl('W21_PARAM'), zd_bl_ein(19));
+    $z[] = array(22, zd_bl('T_BENACHR'), zd_bl('W22_NAME'), zd_bl('W22_PARAM'), zd_bl_ein(21));
+    foreach (array(23 => 'OK', 24 => 'PV', 25 => 'LADEN', 26 => 'ENTLADEN', 27 => 'HAUS', 28 => 'NETZ',
+                   29 => 'WIRKUNG') as $n => $f) {
+        $z[] = zd_bl_vorlage($n, 'T_VIBEF', $ve, zd_ve_name($g, 'tag', $f), sprintf('W%02d_PARAM', $n), $m);
+    }
+    $z[] = array(30, zd_bl('T_STATUS'), zd_bl('W30_NAME'), zd_bl('W30_PARAM'),
+                 'V1 = #24, V2 = #25, V3 = #26, V4 = #27, V5 = #28, V6 = #29, V7 = #23');
+    $z[] = array(31, zd_bl('T_FORMEL'), zd_bl('W31_NAME'), zd_bl('W31_PARAM'), 'I1 = #4');
+    $z[] = array(32, zd_bl('T_SPEICHER'), zd_bl('W32_NAME'), zd_bl('W32_PARAM'), 'Pf = #31, Slvl = #3');
+    return $z;
+}
+
+/** Seite "Zendure SolarFlow Steuerung": Lade-/Entladeregelung und Einstellungen (36 Bausteine). */
+function zd_bausteine_steuerung($g = 1)
+{
+    $vi = zd_vorlage_titel($g);
+    $vq = zd_vorlage_befehle_titel($g);
+    $m = '&mdash;';
+    $z = array();
+    foreach (array(1 => 'OK', 2 => 'HAUS', 3 => 'NETZ', 4 => 'SOLL', 5 => 'SOLLOK', 6 => 'MS') as $n => $f) {
+        $z[] = zd_bl_vorlage($n, 'T_VIBEF', $vi, zd_vi_name($g, $f), sprintf('S%02d_PARAM', $n), $m);
+    }
+    $z[] = array(7,  zd_bl('T_VEIN'), zd_bl('S07_NAME'), zd_bl('S07_PARAM'), $m);
+    $z[] = array(8,  zd_bl('T_VSCHALTER'), zd_bl('S08_NAME'), zd_bl('S08_PARAM'), $m);
+    $z[] = array(9,  zd_bl('T_UND'), zd_bl('S09_NAME'), zd_bl('S09_PARAM'), 'I1 = #8, I2 = #1');
+    $z[] = array(10, zd_bl('T_FORMEL'), zd_bl('S10_NAME'), zd_bl('S10_PARAM'), 'I1 = #2, I2 = #3, I3 = #7');
+    $z[] = array(11, zd_bl('T_FORMEL'), zd_bl('S11_NAME'), zd_bl('S11_PARAM'), 'I1 = #10');
+    $z[] = array(12, zd_bl('T_FORMEL'), zd_bl('S12_NAME'), zd_bl('S12_PARAM'), 'I1 = #10');
+    $z[] = array(13, zd_bl('T_IMPULS'), zd_bl('S13_NAME'), zd_bl('S13_PARAM'), $m);
+    $z[] = array(14, zd_bl('T_NICHT'), zd_bl('S14_NAME'), zd_bl('S14_PARAM'), 'I = ' . zd_bl_aus('Q', 13));
+    $z[] = array(15, zd_bl('T_UND'), zd_bl('S15_NAME'), $m, 'I1 = ' . zd_bl_aus('Q', 13) . ', I2 = #9');
+    $z[] = array(16, zd_bl('T_UND'), zd_bl('S16_NAME'), $m, 'I1 = #14, I2 = #9');
+    $z[] = array(17, zd_bl('T_ANALOGSP'), zd_bl('S17_NAME'), zd_bl('S17_PARAM'), 'V = #11, Set = #15');
+    $z[] = array(18, zd_bl('T_ANALOGSP'), zd_bl('S18_NAME'), zd_bl('S18_PARAM'), 'V = #12, Set = #16');
+    $z[] = zd_bl_vorlage(19, 'T_VQBEF', $vq, zd_vq_name($g, 'ENTLADEN'), 'S19_PARAM', zd_bl_ein(17));
+    $z[] = zd_bl_vorlage(20, 'T_VQBEF', $vq, zd_vq_name($g, 'LADEN'), 'S19_PARAM', zd_bl_ein(18));
+    $z[] = array(21, zd_bl('T_FLANKE'), zd_bl('S21_NAME'), zd_bl('S21_PARAM'), zd_bl_ein(9));
+    $z[] = array(22, zd_bl('T_VTASTE'), zd_bl('S22_NAME'), zd_bl('S22_PARAM'), $m);
+    $z[] = array(23, zd_bl('T_ODER'), zd_bl('S23_NAME'), zd_bl('S23_PARAM'), 'I1 = #22, I2 = ' . zd_bl_aus('Off', 21));
+    $z[] = zd_bl_vorlage(24, 'T_VQBEF', $vq, zd_vq_name($g, 'AUS'), 'S24_PARAM', zd_bl_ein(23));
+    $z[] = array(25, zd_bl('T_STATUS'), zd_bl('S25_NAME'), zd_bl('S25_PARAM'), 'V1 = #4, V2 = #5, V3 = #6');
+    $z[] = array(26, zd_bl('T_STATUS'), zd_bl('S26_NAME'), zd_bl('S26_PARAM'), 'V1 = #9, V2 = #17, V3 = #18, V4 = #7');
+    foreach (array(27 => 'SOCMIN', 29 => 'SOCMAX', 31 => 'GRENZEAUS', 33 => 'GRENZEEIN') as $n => $f) {
+        $z[] = array($n, zd_bl('T_VREGLER'), zd_bl(sprintf('S%02d_NAME', $n)), zd_bl(sprintf('S%02d_PARAM', $n)), $m);
+        $z[] = zd_bl_vorlage($n + 1, 'T_VQBEF', $vq, zd_vq_name($g, $f), 'S28_PARAM', zd_bl_ein($n));
+    }
+    $z[] = array(35, zd_bl('T_VTASTE'), zd_bl('S35_NAME'), zd_bl('S35_PARAM'), $m);
+    $z[] = zd_bl_vorlage(36, 'T_VQBEF', $vq, zd_vq_name($g, 'ABRUF'), '', zd_bl_ein(35));
+    return $z;
+}
+
+/** Der Kasten "So uebernehmen Sie diese Seite": nummerierte Schritte, Knopf- und Feldnamen aus den
+ *  Sprachschluesseln, die die Oberflaeche selbst zeigt. */
+function zd_bl_schritte($seite, $g = 1)
+{
+    $k = function ($s) { return zd_t($s); };
+    $f = function ($n) { return zd_t('BAUSTEIN.' . $n); };
+    if ($seite === 'W') {
+        $s = array(
+            sprintf($f('W_S1'), $k('LOX.K_VORLAGE'), $k('LOX.K_VORLAGE_ENERGIE'), $k('LOX.ZEITRAUM_TAG')),
+            $f('W_S2'),
+            sprintf($f('W_S3'), zd_vorlage_titel($g), zd_vorlage_energie_titel($g, 'tag')),
+            sprintf($f('W_S4'), $k('LOX.T_EINGAENGE')),
+            $f('W_S5'),
+            sprintf($f('W_S6'), $k('EINST.L_TEMP')),
+            $f('W_S7'),
+        );
+    } else {
+        $s = array(
+            sprintf($f('S_S1'), zd_vorlage_titel($g), $k('LOX.K_VORLAGE_BEFEHLE')),
+            sprintf($f('S_S2'), zd_vorlage_titel($g), zd_vorlage_befehle_titel($g)),
+            $f('S_S3'),
+            $f('S_S4'),
+            sprintf($f('S_S5'), $k('LOX.T_EINGAENGE')),
+            sprintf($f('S_S6'), $k('EINST.L_STEUERUNG_EIN'), $k('EINST.L_RUECKFALL_MIN')),
+            $f('S_S7'),
+        );
+    }
+    return array_map('zd_e', $s);
+}
+
+/** Die Hinweise unter einer Liste. */
+function zd_bl_hinweise($seite)
+{
+    $n = $seite === 'W' ? 5 : 8;
+    $h = array();
+    for ($i = 1; $i <= $n; $i++) {
+        $h[] = zd_bl($seite . '_H' . $i);
+    }
+    return $h;
 }
 ?>
 
 <div class="sm-step"><b><?= zd_e(zd_t('LOX.S7_TITEL')) ?></b><br>
 <?= zd_t('LOX.S7_TEXT') ?>
+<?php foreach (array(
+    array('W', 'LOX.BL_WERTE', zd_bausteine_werte(1), 'einbindung_loxone_werte.png', 'Zendure SolarFlow'),
+    array('S', 'LOX.BL_STEUERUNG', zd_bausteine_steuerung(1), 'einbindung_loxone_steuerung.png', 'Zendure SolarFlow Steuerung'),
+) as $zd_bs) { ?>
+<h3><?= zd_e(zd_t($zd_bs[1])) ?></h3>
+<div class="sm-hinweis"><b><?= zd_bl('SCHRITTE_TITEL') ?></b>
+<ol class="sm-schritte">
+<?php foreach (zd_bl_schritte($zd_bs[0]) as $zd_bx) { ?>
+<li><?= $zd_bx ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= zd_e(zd_t('LOX.T_BAUSTEIN')) ?></th><th><?= zd_e(zd_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= zd_e(zd_t('LOX.T_PARAMETER')) ?></th><th><?= zd_e(zd_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (zd_bausteine() as $zd_b) { ?>
-<tr><td><?= (int) $zd_b[0] ?></td><td><?= zd_t($zd_b[1]) ?></td><td><?= zd_t($zd_b[2]) ?></td>
-    <td><?= $zd_b[3] !== '' ? $zd_b[3] : '&mdash;' ?></td><td><?= $zd_b[4] ?></td></tr>
+<?php foreach ($zd_bs[2] as $zd_b) { ?>
+<tr><td><?= (int) $zd_b[0] ?></td><td><?= $zd_b[1] ?></td><td><?= $zd_b[2] ?></td>
+    <td><?= $zd_b[3] ?></td><td><?= $zd_b[4] ?></td></tr>
 <?php } ?>
 </table>
-<?= zd_t('LOX.S7_ERLAEUTERUNG') ?>
+<div class="sm-warnung"><b><?= zd_bl('HINWEISE_TITEL') ?></b>
+<ul class="sm-schritte">
+<?php foreach (zd_bl_hinweise($zd_bs[0]) as $zd_bx) { ?>
+<li><?= $zd_bx ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= zd_e($zd_bs[3]) ?>" alt="<?= zd_e(sprintf(zd_t('LOX.BILD_ALT'), $zd_bs[4])) ?>" loading="lazy">
+<figcaption><?= zd_e(sprintf(zd_t('LOX.BILD_UNTERSCHRIFT'), $zd_bs[4])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= zd_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= zd_e(zd_t('LOX.S8_TITEL')) ?></b><br>
