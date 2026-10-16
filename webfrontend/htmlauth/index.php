@@ -1935,6 +1935,9 @@ function zd_bl_hinweise($seite)
     $h = array();
     for ($i = 1; $i <= $n; $i++) {
         $h[] = zd_bl($seite . '_H' . $i);
+        if ($seite === 'W' && $i === 1) {
+            $h[] = zd_bl('W_H1_EN'); /* Welle Bild 14: Eingang En der Validierung nicht negiert */
+        }
     }
     return $h;
 }
