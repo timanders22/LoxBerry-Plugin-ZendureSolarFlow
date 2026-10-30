@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.37 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.38 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,30 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Neu in 0.9.38 (Gruppe 43, Hausform)
+
+* **MQTT-Gateway V2:** Reiter *MQTT* zeigt die anzuhakenden Datenpunkte mit ihrem Namen in Loxone und *Noncached*
+  (`ok`, `status/zaehler`, `status/befehle`); der Reiter *Test* prüft, ob alles angehakt ist. Die Werte der einzelnen
+  Akkupacks tragen die Seriennummer im Namen und stehen absichtlich nicht in der Liste.
+* **Befehle über MQTT** (gemeinsame Befehlsbrücke 1.0.2, `bin/befehlsbruecke.php`, Zuordnung
+  `bin/befehle_zuordnung.php`): `laden`, `entladen`, `aus`, `socmin`, `socmax`, `grenzeaus`, `grenzeein`, `abruf` unter
+  `<praefix>/befehl/…` (Gerät 2–9 unter `…/befehl/<nr>/…`), Quittung unter `…/quittung`. Haken *Befehle über MQTT
+  annehmen* ab Werk und beim Update aus; eingreifende Befehle zusätzlich nur mit *Schreibende Befehle zulassen*.
+  HTTP und MQTT laufen durch dieselbe Annahmefunktion (`zd_befehl_annehmen()`), die HTTP-Antworten sind unverändert.
+* **Speicherstand an andere Plugins** (`haus/speicher/soc|kwh|leistung|richtung`, neu `haus/speicher/anbieter` =
+  `zendure`, `zaehler` je Minute; ab Werk aus): nur ein Speicher-Plugin im Haus ist Anbieter. Diese Installation
+  beginnt von selbst nur, wenn niemand Anspruch erhebt; sonst Knopf *Diese Installation soll Anbieter sein*. Nie
+  automatisches Umschalten; abgeräumt wird nur als Anbieter.
+* **Lesender HTTP-Endpunkt** abschaltbar (Reiter *MQTT*): Neuinstallation aus, Update an. Schaltende Aktionen bleiben
+  mit Token.
+* **Healthcheck** nach Hausform (ohne Gerät „nicht eingerichtet“), **Update-Rettung** der Merker (Sollwert,
+  Satz-Assistent, Lebenszeichen, Schreiber-Wache, Meldebremsen, Anbieterrolle).
+* **−1-Regel:** ein Messwert ohne Aussage kommt über MQTT als −1 an, die Temperatur als −999 (bisher ging er gar
+  nicht hinaus, und in Loxone stand der letzte Wert). Zustände ohne Aussage weiter als `-`; die Batterieleistung
+  `batp` und die Leistung eines Akkupacks (auch negativ möglich) weiter gar nicht. HTTP unverändert.
+* Behoben: Der Dienst nahm jede `*.json` im Ordner der Warteschlange als Auftrag – die Dateien der Befehlsbrücke
+  wären gelesen und gelöscht worden.
 
 ## Neu in 0.9.37
 

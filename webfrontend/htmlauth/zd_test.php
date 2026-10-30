@@ -337,6 +337,17 @@ function zd_pruefungen()
                     zd_e($zd_ug ? implode(', ', $zd_ug) : '-'), zd_e($zd_us ? implode(', ', $zd_us) : '-'),
                     zd_e($zd_fa ? implode(', ', $zd_fa) : '-')));
 
+    /* Gruppe 43 (0.9.38): Gateway V2 (einheitliche Pruefzeile), Anbieter haus/speicher, Befehlsbruecke, lesender
+     * HTTP-Endpunkt. Grau (2) der V2-Zeile wird hier -1 (Hinweis). */
+    $zd_v2l = zd_v2_haken_lage($cfg);
+    $zeilen[] = zd_pruefzeile($zd_v2l[0] === 2 ? -1 : (int) $zd_v2l[0], zd_t('TEST.F_V2'), zd_e($zd_v2l[1]));
+    $zd_hz = zd_haus_testzeile($cfg);
+    $zeilen[] = zd_pruefzeile((int) $zd_hz[0], zd_t('TEST.F_HAUS_SPEICHER'), zd_e($zd_hz[1]));
+    $zd_bz = zd_bruecke_zustand();
+    $zeilen[] = zd_pruefzeile($zd_bz[0] === true ? 1 : ($zd_bz[0] === null ? -1 : 0), zd_t('TEST.F_BRUECKE'), zd_e($zd_bz[1]));
+    $zeilen[] = zd_pruefzeile(!empty($cfg['endpunkt_ein']) ? 1 : -1, zd_t('TEST.F_HTTP_ENDPUNKT'),
+        zd_t(!empty($cfg['endpunkt_ein']) ? 'TEST.A_ENDPUNKT_EIN' : 'TEST.A_ENDPUNKT_AUS'));
+
     $zeilen[] = zd_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, zd_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? zd_t('TEST.A_STEUERUNG_EIN') : zd_t('TEST.A_STEUERUNG_AUS'));
 

@@ -166,6 +166,16 @@ if ($zd_post && isset($_POST['vorlage'])) {
         list($zd_name, $zd_inhalt) = zd_vorlage_summe();
     } elseif ($zd_art === 'befehle') {
         list($zd_name, $zd_inhalt) = zd_vorlage_befehle($zd_vnr);
+    } elseif ($zd_art === 'mqttbefehle') {
+        // Gruppe 43 (0.9.38): Befehle ueber MQTT (Befehlsbruecke, Ausgang an den UDP-Eingang des Gateways).
+        $zd_vb = zd_vorlage_bruecke();
+        if ($zd_vb === null) {
+            $zd_name = '';
+            $zd_fehler[] = zd_e(zd_t('BEFEHL.VORLAGE_FEHLT'));
+            $zd_tab = 'tab-mqtt';
+        } else {
+            list($zd_name, $zd_inhalt) = $zd_vb;
+        }
     } elseif ($zd_art === 'alle') {
         list($zd_name, $zd_inhalt) = zd_vorlagen_paket();
         $zd_typ = 'application/zip';
@@ -256,10 +266,21 @@ if ($zd_post && isset($_POST['konfig_ein'])) {
         $zd_fehler[] = zd_t('EINST.KONFIG_ZU_GROSS');
     } else {
         $zd_inhalt = (string) @file_get_contents($_FILES['konfig_datei']['tmp_name']);
+        $zd_vor43 = zd_config();   // Gruppe 43: Stand vor dem Zurueckspielen (Folgen haus/speicher, Bruecke)
         list($zd_kok, $zd_kmeld) = zd_konfig_einfuhr($zd_inhalt);
         // Die Meldung ist HTML-sicher (U6): Auszeichnung dargestellt, Werte maskiert.
         if ($zd_kok) {
             $zd_meldungen[] = $zd_kmeld;
+            $zd_nach43 = zd_config();
+            list($zd_hm, $zd_hs) = zd_haus_folgen($zd_vor43, $zd_nach43);
+            if ($zd_hm !== '') {
+                if ($zd_hs === 'ok') { $zd_meldungen[] = zd_e($zd_hm); } else { $zd_fehler[] = zd_e($zd_hm); }
+            }
+            $zd_bbv = !empty($zd_vor43['befehle_mqtt_ein']) && !empty($zd_vor43['mqtt_ein']);
+            $zd_bbn = !empty($zd_nach43['befehle_mqtt_ein']) && !empty($zd_nach43['mqtt_ein']);
+            if ($zd_bbv !== $zd_bbn) {
+                zd_bruecke_schalten($zd_bbn);
+            }
             zd_log('Konfiguration aus einer Sicherung zurueckgespielt.');
             /* Den laufenden Dienst nachziehen und das Ergebnis melden (U5).
              * Bis 0.9.27 stand nur "Bitte den Dienst neu starten". */
@@ -667,6 +688,12 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
         $zd_alt_pr = 'zendure';
     }
     $zd_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    /* Gruppe 43 (0.9.38): Anbieter haus/speicher, Befehle ueber MQTT, lesender HTTP-Endpunkt - eigenes Formular dieses
+     * Reiters, also hier gelesen. $zd_alt43 = Stand vor dem Speichern (Folgen unten). */
+    $zd_alt43 = zd_config();
+    $zd_mcfg['haus_speicher_ein'] = isset($_POST['haus_speicher_ein']) ? 1 : 0;
+    $zd_mcfg['befehle_mqtt_ein']  = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $zd_mcfg['endpunkt_ein']      = isset($_POST['endpunkt_ein']) ? 1 : 0;
     /* Beanstanden statt zurechtbiegen (U12): bis 0.9.27 wurden "/" und "///"
      * still zu '' und gespeichert, das Abo lautete danach "/#". */
     $zd_mtopic = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']))
@@ -793,9 +820,30 @@ if ($zd_post && isset($_POST['save_mqtt'])) {
             @unlink($zd_p['datadir'] . '/mqtt_letzte.json');
         }
         zd_abo_datei($zd_neu_pr, true);     // M9
+        /* Gruppe 43 (0.9.38): Folgen fuer haus/speicher (Abraeumen nur als Anbieter, hanb_darf_abraeumen()) und die
+         * Befehlsbruecke sofort starten bzw. anhalten (sonst holt es der Waechter im Minutentakt nach). */
+        list($zd_hm, $zd_hs) = zd_haus_folgen($zd_alt43, $zd_mcfg);
+        if ($zd_hm !== '') {
+            if ($zd_hs === 'ok') { $zd_meldungen[] = zd_e($zd_hm); } else { $zd_fehler[] = zd_e($zd_hm); }
+        }
+        $zd_bbv = !empty($zd_alt43['befehle_mqtt_ein']) && !empty($zd_alt43['mqtt_ein']);
+        $zd_bbn = !empty($zd_mcfg['befehle_mqtt_ein']) && !empty($zd_mcfg['mqtt_ein']);
+        if ($zd_bbv !== $zd_bbn) {
+            list($zd_brc, $zd_baus) = zd_bruecke_schalten($zd_bbn);
+            $zd_btxt = sprintf(zd_t($zd_bbn ? 'BEFEHL.M_START' : 'BEFEHL.M_STOPP'), trim((string) $zd_baus));
+            if ((int) $zd_brc === 0) { $zd_meldungen[] = zd_e($zd_btxt); } else { $zd_fehler[] = zd_e($zd_btxt); }
+        }
     } else {
         $zd_fehler[] = sprintf(zd_t('EINST.FEHLER_SPEICHERN'), $zd_p['config']);
     }
+    $zd_tab = 'tab-mqtt';
+}
+
+/* ---------------- Gruppe 43 (0.9.38): Knopf "Diese Installation soll Anbieter sein" ----------------
+ * Eigenes Formular im Reiter MQTT; schreibt einmal haus/speicher/anbieter = zendure (zd_haus_waehlen()). */
+if ($zd_post && isset($_POST['haus_waehlen'])) {
+    list($zd_wm, $zd_ws) = zd_haus_waehlen(zd_config(false));
+    if ($zd_ws === 'ok') { $zd_meldungen[] = zd_e($zd_wm); } else { $zd_fehler[] = zd_e($zd_wm); }
     $zd_tab = 'tab-mqtt';
 }
 
@@ -1571,12 +1619,87 @@ $zd_cfg = zd_eingaben_ueberlagern($zd_cfg, 'mqtt'); ?>
   <input data-role="none" type="number" id="mqtt_auffrischung" name="mqtt_auffrischung"<?= zd_markierung('mqtt_auffrischung') ?> value="<?= zd_e((string) $zd_cfg['mqtt_auffrischung']) ?>" min="0" max="3600">
   <div class="sm-hilfe"><?= zd_t('EINST.H_MQTT_AUFFR') ?></div>
 </div>
+<?php /* Gruppe 43 (0.9.38): Hausform - Anbieter haus/speicher, Befehle ueber MQTT, lesender HTTP-Endpunkt. */ ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="haus_speicher_ein" value="1" <?= !empty($zd_cfg['haus_speicher_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('HAUS.L_SPEICHER')) ?>
+  </label>
+  <div class="sm-hilfe"><?= zd_t('HAUS.H_SPEICHER') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= !empty($zd_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('BEFEHL.L_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= zd_t('BEFEHL.H_EIN') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= !empty($zd_cfg['endpunkt_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('HAUS.L_ENDPUNKT')) ?>
+  </label>
+  <div class="sm-hilfe"><?= zd_t('HAUS.H_ENDPUNKT') ?></div>
+</div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= zd_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
 <?php $zd_cfg = $zd_cfg_gespeichert; ?>
+<?php /* ---------- Gruppe 43 (0.9.38): Anbieter haus/speicher ---------- */
+$zd_hz = zd_haus_testzeile($zd_cfg);
+$zd_hkl = $zd_hz[0] === 1 ? 'sm-hinweis' : ($zd_hz[0] === 0 ? 'sm-fehler' : 'sm-step'); ?>
+<h2><?= zd_e(zd_t('HAUS.H_ANBIETER')) ?></h2>
+<div class="<?= $zd_hkl ?>"><?= zd_e($zd_hz[1]) ?></div>
+<?php if (!empty($zd_cfg['haus_speicher_ein']) && !empty($zd_cfg['mqtt_ein'])) { ?>
+<p class="sm-hilfe"><?= zd_t('HAUS.H_WAEHLEN') ?></p>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="haus_waehlen" value="1">
+<input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= zd_e(zd_t('HAUS.K_WAEHLEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+<?php /* ---------- Gruppe 43 (0.9.38): Befehle ueber MQTT (Befehlsbruecke 1.0.2) ---------- */
+list($zd_bz, $zd_bzt) = zd_bruecke_zustand();
+list($zd_bl) = zd_befehle_liste(); ?>
+<h2><?= zd_e(zd_t('BEFEHL.H_TITEL')) ?></h2>
+<div class="<?= $zd_bz === true ? 'sm-hinweis' : ($zd_bz === false ? 'sm-fehler' : 'sm-step') ?>"><?= zd_e($zd_bzt) ?></div>
+<p class="sm-hilfe"><?= zd_t('BEFEHL.ERKLAERUNG') ?></p>
+<?php if (is_array($zd_bl)) { ?>
+<table class="sm-tbl">
+<tr><th><?= zd_e(zd_t('BEFEHL.T_THEMA')) ?></th><th><?= zd_e(zd_t('BEFEHL.T_WERT')) ?></th><th><?= zd_e(zd_t('BEFEHL.T_EINGREIFEND')) ?></th></tr>
+<?php foreach ($zd_bl['befehle'] as $zd_bb) {
+    $zd_bw = $zd_bb['art'] === 'puls' ? '1' : ((isset($zd_bb['min']) ? $zd_bb['min'] : '') . ' … ' . (isset($zd_bb['max']) ? $zd_bb['max'] : '')); ?>
+<tr><td><span class="sm-mono"><?= zd_e($zd_bb['thema']) ?></span></td><td><?= zd_e($zd_bw) ?></td><td><?= !empty($zd_bb['eingreifend']) ? zd_e(zd_t('ALLG.JA')) : zd_e(zd_t('ALLG.NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-legende"><span><i class="sm-punkt sm-b-lesen"></i> <?= zd_t('LEGENDE.LESEN') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="mqttbefehle"><?= zd_e(zd_t('BEFEHL.K_VORLAGE')) ?></button>
+</div>
+</form>
+<?php } ?>
+<?php /* ---------- Gruppe 43 (0.9.38): Gateway V2 - diese Datenpunkte anhaken ---------- */
+$zd_v2 = zd_v2_haken($zd_cfg); ?>
+<h2><?= zd_e(zd_t('MQTT.H_V2')) ?></h2>
+<p class="sm-hilfe"><?= zd_t('MQTT.V2_ERKLAERUNG') ?></p>
+<?php if (!$zd_v2 || !zd_geraete()) { ?>
+<div class="sm-step"><?= zd_e(zd_t('TEST.V2_NICHT_EINGERICHTET')) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= zd_e(zd_t('ALLG.EIGENSCHAFT')) ?></th><th><?= zd_e(zd_t('MQTT.T_GATEWAYNAME')) ?></th><th><?= zd_e(zd_t('MQTT.T_NONCACHED')) ?></th></tr>
+<?php foreach ($zd_v2 as $zd_ve) { ?>
+<tr><td><span class="sm-mono"><?= zd_e($zd_ve['thema']) ?></span></td><td><span class="sm-mono"><?= zd_e($zd_ve['name']) ?></span></td><td><?= zd_e(zd_t($zd_ve['noncached'] ? 'MQTT.NONCACHED_JA' : 'MQTT.NONCACHED_NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
 <h2><?= zd_e(zd_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= zd_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 <?php if (!$zd_mqtt['gefunden']) { ?>
@@ -1634,6 +1757,11 @@ foreach (zd_mqtt_themen() as $zd_thema => $zd_schluessel) { ?>
 <div class="sm-seite<?= $zd_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= zd_e(zd_t('LOX.H_TITEL')) ?></h2>
 <p><?= zd_t('LOX.EINLEITUNG') ?></p>
+<?php /* Gruppe 43 (0.9.38): Hausform - Werte ueber das Gateway V2, Befehle ueber die Bruecke; Endpunkt aus. */ ?>
+<div class="sm-hinweis"><?= zd_t('LOX.HAUSFORM_V2') ?></div>
+<?php if (empty($zd_cfg['endpunkt_ein'])) { ?>
+<div class="sm-warnung"><?= zd_t('LOX.ENDPUNKT_AUS') ?></div>
+<?php } ?>
 
 <div class="sm-step"><b><?= zd_e(zd_t('LOX.S1_TITEL')) ?></b><br><?= zd_t('LOX.S1_TEXT') ?></div>
 

@@ -99,14 +99,9 @@ function zd_get_text($name)
 
 /* Jede Abweisung ins Protokoll, mit der Adresse des Anrufers, hoechstens
  * eine Zeile je Minute und Grund; nie das Token (Befund Code 8, 29.09.2026:
- * bis 0.9.27 schrieb dieser Endpunkt auf keinem Weg eine Zeile). */
-function zd_ep_abweisung($grund, $aktion = '')
-{
-    $wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
-    $akt = is_string($aktion) ? substr(preg_replace('/[^a-z0-9_]/i', '', $aktion), 0, 20) : '';
-    zd_log_gebremst('ep_' . strtolower($grund), 'Endpunkt: Anfrage von ' . ($wer === '' ? '?' : $wer)
-        . ' abgewiesen, Grund ' . $grund . ($akt !== '' ? ', Aktion ' . $akt : '') . '.', 60);
-}
+ * bis 0.9.27 schrieb dieser Endpunkt auf keinem Weg eine Zeile).
+ * Seit 0.9.38 steht zd_ep_abweisung() wortgleich in zd_lib.php - die
+ * Annahmefunktion zd_befehl_annehmen() braucht sie auch fuer den MQTT-Weg. */
 
 /* ---------------- Token ---------------- */
 $zd_soll = $zd_cfg['aktionstoken'];
@@ -172,6 +167,18 @@ if (!is_string($zd_aktion) || !in_array($zd_aktion, array_merge($zd_lesend, $zd_
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
     echo 'Erlaubt sind: ' . implode(', ', array_merge($zd_lesend, $zd_schaltend)) . "\n";
+    exit;
+}
+
+/* Gruppe 43 (0.9.38, Z4; Hausform G39 E-E1 A wie G27/G22): der LESENDE Teil des Endpunkts laesst sich abschalten
+ * (endpunkt_ein, Reiter MQTT). Neue Anlagen holen die Werte ueber das MQTT-Gateway V2; eine Neuinstallation hat ihn
+ * aus, ein Update laesst ihn an (postinstall.sh). Geprueft NACH Token und Selbsttest - ?selftest=1 beantwortet weiter
+ * die Frage nach dem Token. Die schaltenden Aktionen bleiben mit Token erreichbar. */
+if (in_array($zd_aktion, $zd_lesend, true) && empty($zd_cfg['endpunkt_ein'])) {
+    zd_ep_abweisung('ENDPUNKT_AUS', $zd_aktion);
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der lesende HTTP-Endpunkt ist ausgeschaltet (Reiter MQTT, Haken HTTP-Endpunkt). Neue Anlagen holen die Werte ueber das MQTT-Gateway V2.\n";
     exit;
 }
 
@@ -409,160 +416,13 @@ if ($zd_aktion === 'status') {
 
 /* ================= Schaltende Aktionen ================= */
 
-/* Erst die Anfrage, dann Freigabe und Dienst (Befund Code 12, 29.09.2026;
- * Regeln/03): bis 0.9.27 bekam "laden" ohne watt bei stehendem Dienst 503
- * DIENST_LAEUFT_NICHT statt 400 WATT_FEHLT. */
-$zd_befehl = array('aktion' => $zd_aktion, 'geraet' => (int) $zd_nr);
-if ($zd_dry) {
-    $zd_befehl['trocken'] = 1;
+/* Seit 0.9.38 (Gruppe 43, Z3/E8) in EINER Annahmefunktion zd_befehl_annehmen() in zd_lib.php - dieselbe Funktion
+ * ruft die Befehlsbruecke fuer Befehle ueber MQTT (bin/befehle_zuordnung.php, von=mqtt). Reihenfolge, Antwortzeilen,
+ * HTTP-Codes und Protokollzeilen unveraendert (Probe P3: alle Abweisungen byte-gleich mit 0.9.37): Wert fehlt 400,
+ * Geraet 404, Freigabe 403, Dienst 503, Schreiber-Wache 409, Sofortabruf-Bremse, Gleichwert-Unterdrueckung,
+ * Einreihen (500 nur bei OK=0 des Dienstes). */
+$zd_ant = zd_befehl_annehmen($zd_aktion, $zd_nr, $zd_watt, $zd_prozent, $zd_dry, $zd_von, $zd_cfg, 'http');
+if ($zd_ant['http'] !== 200) {
+    http_response_code($zd_ant['http']);
 }
-if (in_array($zd_aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), true)) {
-    if ($zd_watt === '') {
-        zd_ep_abweisung('WATT_FEHLT', $zd_aktion);
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=WATT_FEHLT\n";
-        exit;
-    }
-    $zd_befehl['watt'] = (int) $zd_watt;
-} elseif (in_array($zd_aktion, array('socmin', 'socmax'), true)) {
-    if ($zd_prozent === '') {
-        zd_ep_abweisung('PROZENT_FEHLT', $zd_aktion);
-        http_response_code(400);
-        echo "SET;OK=0;GRUND=PROZENT_FEHLT\n";
-        exit;
-    }
-    $zd_befehl['prozent'] = (int) $zd_prozent;
-}
-
-/* Das Geraet muss eingerichtet sein (Nachzug Zendure-g1, 01.10.2026).
- * Geprueft wird gegen die Geraeteliste der Konfiguration - dieselbe, aus der
- * der Dienst arbeitet -, nicht gegen das Abbild. Bis 0.9.31 entschied das
- * Abbild: ein schaltender Befehl an ein Geraet, das darin fehlte (geraet=2 bei
- * einem Geraet, oder noch kein Abbild geschrieben), bekam HTTP 200 mit der
- * Statuszeile "ZENDURE;OK=0;GRUND=GERAET_UNBEKANNT" statt einer
- * Befehlsantwort, und ein eingerichtetes Geraet ohne Abbild liess sich nicht
- * schalten. Jetzt 404: die Anfrage ist wohlgeformt (sonst 400), aber das
- * angesprochene Geraet gibt es nicht. Kein 503 - das gehoert dem Ausfall
- * einer Quelle (Regeln/07), und ein eingerichtetes Geraet kommt hier nie hin.
- * Die Pruefung steht vor Freigabe, Dienst und Gleichwert-Merker: nichts wird
- * eingereiht, der Merker nicht geoeffnet. Gilt auch fuer abruf und dry=1.
- * zd_geraete() liest mit Selbstheilung; die greift nur ohne Aktionstoken,
- * und ohne gueltiges Token kaeme der Aufruf nicht bis hier. */
-$zd_ger = zd_geraete();
-if (!isset($zd_ger[$zd_nr])) {
-    zd_ep_abweisung('GERAET_UNBEKANNT', $zd_aktion);
-    http_response_code(404);
-    printf("SET;OK=0;AKTION=%s;GRUND=GERAET_UNBEKANNT;N=%d\n", $zd_aktion, count($zd_ger));
-    printf("Geraet %d ist nicht eingerichtet (eingerichtet: %d) - es wurde nichts gesendet. Reiter Einstellungen.\n",
-        (int) $zd_nr, count($zd_ger));
-    exit;
-}
-
-// Der Trockenlauf sendet nichts und braucht die Freigabe deshalb nicht.
-if ($zd_aktion !== 'abruf' && !$zd_dry && empty($zd_cfg['steuerung_ein'])) {
-    zd_ep_abweisung('STEUERUNG_AUS', $zd_aktion);
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
-    exit;
-}
-if (zd_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
-    zd_ep_abweisung('DIENST_LAEUFT_NICHT', $zd_aktion);
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-/* ---------------- Schreiber-Wache (Energie-1 C1) ----------------
- *
- * Nach Geraet (404), Freigabe (403) und Dienst (503), VOR der Gleichwert-Unterdrueckung:
- * auch ein Befehl, der als unveraendert beantwortet wird, kommt von einem Schreiber. Die
- * Unterdrueckung selbst bleibt, wie sie war. Ein abgewiesener Befehl wird nicht
- * eingereiht und oeffnet den Gleichwert-Merker nicht. abruf geht vorbei. */
-$zd_wz = '';
-if (zd_wache_gilt($zd_aktion)) {
-    list($zd_wab, $zd_wz) = zd_wache_anwenden($zd_ger[$zd_nr], $zd_aktion, $zd_von, $zd_dry);
-    if ($zd_wab) {
-        zd_ep_abweisung('FREMDSCHREIBER', $zd_aktion);
-        http_response_code(409);
-        echo 'SET;OK=0;AKTION=' . $zd_aktion . ';GRUND=FREMDSCHREIBER' . ($zd_dry ? ';DRY=1' : '') . "\n";
-        echo "Dieser Schreiber steht nicht in der Liste der erlaubten Schreiber (Reiter Einstellungen, Schreiber-Wache) - es wurde nichts eingereiht.\n";
-        exit;
-    }
-}
-
-/* Sofortabruf mit Bremse (Befund Code 7, 29.09.2026; Regeln/03 "Jeder
- * Ausloeser, den eine fremde Anlage bedient, braucht eine Bremse"): bis
- * 0.9.27 ergaben 10 Aufrufe in 2 s zehn Geraeteabrufe mit je fuenf
- * Schreibvorgaengen. Hoechstens ein Abruf je max(10 s, Takt/2); der
- * Taktabruf (ts des Abbilds) zaehlt mit. Ein zu frueher Aufruf bekommt das
- * vorhandene Abbild mit seinem ALTER. Die Pruefung laeuft unter flock, damit
- * gleichzeitige Aufrufe einander nicht ueberholen. Auch ein Trockenlauf
- * zaehlt: der Dienst ruft bei "abruf" in jedem Fall ab. */
-if ($zd_aktion === 'abruf') {
-    $zd_abstand = max(10, (int) floor(max(5, (int) $zd_cfg['intervall']) / 2));
-    $zd_warten = 0;
-    $zd_fh = @fopen(zd_paths()['datadir'] . '/.abruf_endpunkt', 'c+');
-    if ($zd_fh !== false) {
-        if (@flock($zd_fh, LOCK_EX)) {
-            $zd_letzt = (int) trim((string) stream_get_contents($zd_fh));
-            $zd_basis = max($zd_letzt, isset($zd_lox['ts']) ? (int) $zd_lox['ts'] : 0);
-            $zd_warten = $zd_basis + $zd_abstand - time();
-            if ($zd_warten <= 0) {
-                ftruncate($zd_fh, 0);
-                rewind($zd_fh);
-                fwrite($zd_fh, (string) time());
-                fflush($zd_fh);
-            }
-            flock($zd_fh, LOCK_UN);
-        }
-        fclose($zd_fh);
-    }
-    if ($zd_warten > 0) {
-        printf("SET;OK=1;AKTION=abruf;GRUND=ZU_FRUEH;WARTEN=%d;ALTER=%d\n", $zd_warten, $zd_alter);
-        echo 'Hoechstens ein Sofortabruf je ' . $zd_abstand . " s - es gilt das vorhandene Abbild.\n";
-        exit;
-    }
-}
-
-/* Gleichwert-Unterdrueckung (X-7, B-Nachzug 01.10.2026, Entscheidung
- * Nr. 19; Vorbild EVCC 0.9.37). Erst sind Aktion, Wert, Freigabe und Dienst
- * geprueft (oben), dann kommt die Unterdrueckung, dann das Einreihen. Der
- * Merker bleibt bis nach der Antwort des Dienstes gesperrt; laesst er sich
- * nicht oeffnen, faellt es geschlossen aus (503) - eingereiht wird dann
- * nichts. abruf und der Trockenlauf sind nicht betroffen (Schluessel ''). */
-$zd_gw_schl = zd_gleichwert_schluessel($zd_befehl);
-$zd_gw = null;
-$zd_gw_merker = array();
-$zd_gw_wert = zd_gleichwert_wert($zd_befehl);
-if ($zd_gw_schl !== '') {
-    $zd_gw = zd_gleichwert_oeffnen();
-    if ($zd_gw === false) {
-        zd_ep_abweisung('GLEICHWERT_MERKER', $zd_aktion);
-        http_response_code(503);
-        echo zd_wache_zeile('SET;OK=0;AKTION=' . $zd_aktion . ";GRUND=GLEICHWERT_MERKER\n", $zd_wz);
-        echo "Der Merker der Gleichwert-Unterdrueckung laesst sich nicht oeffnen - es wurde nichts gesendet. Protokoll im Reiter Logdateien.\n";
-        exit;
-    }
-    $zd_gw_merker = zd_gleichwert_lesen($zd_gw);
-    $zd_seit = zd_gleichwert_seit($zd_gw_merker, $zd_gw_schl, $zd_gw_wert);
-    if ($zd_seit >= 0) {
-        zd_gleichwert_schliessen($zd_gw, null);
-        echo zd_wache_zeile(sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
-            $zd_aktion, $zd_seit, $zd_seit), $zd_wz);
-        exit;
-    }
-}
-
-list($zd_erg, $zd_meldung) = zd_befehl_absetzen($zd_befehl);
-if ($zd_gw !== null) {
-    zd_gleichwert_schliessen($zd_gw, zd_gleichwert_nachher($zd_gw_merker, $zd_gw_schl, $zd_gw_wert, $zd_erg === 1));
-}
-if ($zd_erg === 0) {
-    http_response_code(500);
-}
-// Schreiber-Wache (Energie-1 C1): ;SCHREIBER=n / ;WACHE=MERKER vor MELDUNG.
-echo zd_wache_zeile(sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $zd_erg, $zd_aktion,
-    str_replace(array("\r", "\n", ';'), ' ', $zd_meldung)), $zd_wz);
+echo $zd_ant['aus'];

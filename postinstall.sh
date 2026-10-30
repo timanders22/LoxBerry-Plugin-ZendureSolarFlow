@@ -232,6 +232,40 @@ if ! command -v php >/dev/null 2>&1; then
 fi
 echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 
+# ---------- endpunkt_ein beim Update (Gruppe 43, 0.9.38, Hausform G39 E-E1 A; Abschrift Tibber 0.9.33) ----------
+# Neue Anlagen nehmen das MQTT-Gateway V2; dort ist der LESENDE HTTP-Endpunkt ab Werk aus (zd_vorgaben()). Eine Anlage,
+# die von einer Fassung vor 0.9.38 kommt, nutzt ihn vermutlich (HTTP-Vorlage) - fehlt der Schluessel in der
+# zurueckgespielten Konfiguration, wird er auf 1 gesetzt, in zendure.json und in der Zweitschrift. Ein vorhandener
+# Wert bleibt (auch 0). Eine Konfiguration ohne Inhalt ({}) bleibt unberuehrt. befehle_mqtt_ein bleibt ab Werk und
+# beim Update 0 (fehlt der Schluessel, gilt die Vorgabe). Unteilbar (Nebendatei, Rechte vor dem Umbenennen).
+if [ "$ZD_UPGRADE" = "1" ]; then
+    for ZD_F in "$PCONFIG/zendure.json" "$BASE/config/plugins/$PFOLDER.backup.json"; do
+        [ -s "$ZD_F" ] && [ ! -L "$ZD_F" ] || continue
+        php -r '$f = $argv[1];
+$d = json_decode((string) @file_get_contents($f), true);
+if (!is_array($d)) { exit(1); }
+if (!$d || array_key_exists("endpunkt_ein", $d)) { exit(3); }
+$d["endpunkt_ein"] = 1;
+$j = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$t = $f . ".g43." . getmypid();
+$m = fileperms($f) & 0777;
+$alt = umask(077);
+$ok = $j !== false && @file_put_contents($t, $j) === strlen($j);
+umask($alt);
+if (!$ok) { @unlink($t); exit(1); }
+@chmod($t, $m);
+if (!@rename($t, $f)) { @unlink($t); exit(1); }
+exit(0);' -- "$ZD_F" >/dev/null 2>&1
+        case $? in
+            0) echo "<OK> $(basename "$ZD_F"): lesender HTTP-Endpunkt bleibt eingeschaltet (endpunkt_ein = 1, Bestand)." ;;
+            3) ;;
+            *) echo "<INFO> $(basename "$ZD_F"): endpunkt_ein liess sich nicht ergaenzen - der lesende Endpunkt ist aus,"
+               echo "<INFO> bis er im Reiter MQTT eingeschaltet wird." ;;
+        esac
+    done
+    chmod 600 "$PCONFIG/zendure.json" 2>/dev/null
+fi
+
 # ---------- mosquitto-Werkzeuge ----------
 # Nur fuer die alten Geraete noetig. Fehlen sie, wird das gemeldet und die
 # Installation laeuft weiter - ein Plugin, das wegen eines nur teilweise
@@ -330,6 +364,36 @@ netz_zurueck "zendure.json" "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c
 # vollen Versand und sonst nichts.
 rm -f "$PDATA/mqtt_letzte.json" 2>/dev/null
 
+# ---------- Gruppe 43 (0.9.38): Update-Rettung zurueckholen ----------
+# Dieselbe Liste wie preupgrade.sh (ZD_RETTEN). Was neu schon da ist, gilt. Nur mit Marke (Update); bei einer
+# Neuinstallation wird nichts eingespielt. Gelingt alles, verschwindet die Sicherung; sonst bleibt sie liegen.
+ZD_RETTEN="soll.json satztest.json suche.json .takt .befund haus_anbieter.json haus_quellen.json haus_sitzung.json .mqtt_dienstaussage_geraeumt .meld_* .wache_* schreiber_geraet*.json"
+ZD_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+if [ "$ZD_UPGRADE" = "1" ] && [ -d "$ZD_SICHER" ] && [ ! -L "$ZD_SICHER" ]; then
+    ZD_GERETTET=1
+    ZD_NAMEN=""
+    for ZD_M in $ZD_RETTEN; do
+        for ZD_Q in "$ZD_SICHER"/$ZD_M; do
+            [ -f "$ZD_Q" ] && [ ! -L "$ZD_Q" ] || continue
+            ZD_Z="$PDATA/$(basename "$ZD_Q")"
+            if [ ! -e "$ZD_Z" ]; then
+                cp -p "$ZD_Q" "$ZD_Z" 2>/dev/null
+                cmp -s "$ZD_Q" "$ZD_Z" || ZD_GERETTET=0
+                chown loxberry:loxberry "$ZD_Z" 2>/dev/null
+            fi
+            ZD_NAMEN="$ZD_NAMEN $(basename "$ZD_Q")"
+        done
+    done
+    if [ "$ZD_GERETTET" = "1" ]; then
+        [ -n "$ZD_NAMEN" ] && echo "<OK> Ueber das Update gerettet:$ZD_NAMEN."
+        case "$ZD_SICHER" in
+            */data/plugins/?*.upgrade_sicherung) rm -rf "${ZD_SICHER:?}" 2>/dev/null ;;
+        esac
+    else
+        echo "<WARNING> Merker liessen sich nicht vollstaendig zurueckholen. Die Sicherung bleibt liegen: $ZD_SICHER"
+    fi
+fi
+
 # Ohne Bedingung: Konfiguration und beide Zweitschriften auf 600 (Befund I4,
 # 29.09.2026). Darin stehen Aktionstoken und Broker-Passwort; bis 0.9.27
 # blieben sie nach cp -p aus einer 644-Zweitschrift auf 644.
@@ -338,6 +402,19 @@ for ZD_F in "$PCONFIG/zendure.json" "$BASE/config/plugins/$PFOLDER.backup.json" 
     [ -f "$ZD_F" ] && chmod 600 "$ZD_F" 2>/dev/null
 done
 
+# ---------- Gruppe 43 (0.9.38): die Befehlsbruecke wieder starten ----------
+# Startet nur mit "Befehle ueber MQTT annehmen" und nie als root; befehlsbruecke.sh lehnt den Start waehrend einer
+# frischen Upgrade-Marke ab - die Marke faellt deshalb hier (sonst im trap am Ende). Sonst holt es der Minutentakt
+# (cron.01min, befehlsbruecke.sh waechter) nach.
+BBSH="$PBIN/befehlsbruecke.sh"
+if [ "$ZD_UPGRADE" = "1" ] && [ -f "$BBSH" ] && [ "$(id -u)" != "0" ]; then
+    zd_marke_weg
+    ZD_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+    case "$ZD_BB" in
+        *gestartet*|*laeuft*) echo "<OK> $ZD_BB" ;;
+        *) echo "<INFO> Befehlsbruecke: $ZD_BB (der Minutentakt versucht es erneut)" ;;
+    esac
+fi
 printf '%s' "$ZD_KENNUNG" > "$ZD_EINBAU" 2>/dev/null \
     || echo "<WARNING> Der Einbaumerker $ZD_EINBAU liess sich nicht schreiben."
 exit 0

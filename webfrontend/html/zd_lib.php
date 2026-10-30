@@ -34,6 +34,11 @@ if (!function_exists('zd_e')) {
     }
 }
 
+/* Gruppe 43 (0.9.38): die Anbieterregel fuer haus/speicher - gemeinsames Stueck, byte-gleich in allen Anbieter-Linien
+ * (haus_anbieter.php, hanb_*(); nur reine Funktionen; Stamm Werkzeuge/gemeinsam/haus_anbieter.php). Liegt neben
+ * dieser Datei. */
+require_once __DIR__ . '/haus_anbieter.php';
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -249,6 +254,15 @@ function zd_vorgaben()
         'broker_user'    => '',
         'broker_pw'      => '',
         'steuerung_ein'  => 0,
+        /* Gruppe 43 (0.9.38), alle ab Werk aus.
+         * haus_speicher_ein: Anbieter haus/speicher (E7, wirkt nur mit mqtt_ein, mit Anbieterregel E4).
+         * befehle_mqtt_ein:  Befehle ueber MQTT annehmen (Befehlsbruecke 1.0.2, E8; ab Werk UND beim Update 0;
+         *                    eingreifende Befehle zusaetzlich nur mit steuerung_ein - kein neuer zweiter Haken).
+         * endpunkt_ein:      der LESENDE HTTP-Endpunkt (Hausform G39 E-E1 A: Neuinstallation aus, Update 1 durch
+         *                    postinstall.sh, wenn der Schluessel fehlt); die schaltenden Aktionen bleiben mit Token. */
+        'haus_speicher_ein' => 0,
+        'befehle_mqtt_ein'  => 0,
+        'endpunkt_ein'      => 0,
         'schreibbremse'  => 30,     // Sekunden zwischen zwei Schreibbefehlen je Geraet
         'schrittweite'   => 50,     // Watt; Sollwerte werden darauf gerastert
         'verlauf_tage'   => 8,
@@ -2880,6 +2894,12 @@ function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
     if ($zd_wfehlt) {
         $hinweise[] = sprintf(zd_t('EINST.SICH_WACHE_BEHALTEN'), zd_e(implode(', ', $zd_wfehlt)));
     }
+    /* Gruppe 43 (0.9.38): eine Sicherung aus 0.9.37 oder frueher kennt die neuen Haken nicht - es gilt weiter, was
+     * eingestellt ist (Hinweis EINST.SICH_OHNE_G43), nichts wird abgewiesen. */
+    $zd_g43fehlt = array_values(array_diff(zd_neue_schluessel_0938(), array_keys($neu)));
+    if ($zd_g43fehlt) {
+        $hinweise[] = sprintf(zd_t('EINST.SICH_OHNE_G43'), zd_e(implode(', ', $zd_g43fehlt)));
+    }
     if (!isset($gut['aktionstoken']) || $gut['aktionstoken'] === '') {
         $cfg['aktionstoken'] = $alt['aktionstoken'];
         $hinweise[] = zd_t('EINST.SICH_TOKEN_BEHALTEN');
@@ -2887,6 +2907,11 @@ function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
     if (!empty($gut['steuerung_ein']) && empty($alt['steuerung_ein'])) {
         $cfg['steuerung_ein'] = 0;
         $hinweise[] = zd_t('EINST.SICH_STEUERUNG_AUS');
+    }
+    /* Gruppe 43 (0.9.38): wie die Freigabe oben - eine Sicherung schaltet die Befehle ueber MQTT nicht ein. */
+    if (!empty($gut['befehle_mqtt_ein']) && empty($alt['befehle_mqtt_ein'])) {
+        $cfg['befehle_mqtt_ein'] = 0;
+        $hinweise[] = zd_t('EINST.SICH_BEFEHLE_AUS');
     }
     if (!zd_config_speichern($cfg)) {
         return array(0, sprintf(zd_t('EINST.FEHLER_SPEICHERN'), zd_e(zd_paths()['config'])));
@@ -2979,7 +3004,8 @@ function zd_sicherung_wert_pruefen($k, $v)
         return '';
     }
     if (in_array($k, array('mqtt_ein', 'steuerung_ein', 'schutz_ein', 'energie_ein',
-                           'wache_ein', 'wache_lb_melden', 'wache_sperren_ein'), true)) {
+                           'wache_ein', 'wache_lb_melden', 'wache_sperren_ein',
+                           'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein'), true)) {
         return ($v === 0 || $v === 1) ? '' : zd_t('EINST.SICH_SCHALTER');
     }
     $text = function ($x, $max) {
@@ -3895,6 +3921,52 @@ function zd_mqtt_lebenszeichen($ts, $zaehler)
 }
 
 /**
+ * Die -1-Regel (Nachtrag 0.9.38, 29.10.2026, Auftrag des Hausherrn; Hausform wie BYD 0.9.29 und Weissware
+ * 0.9.44): welcher Fehlwert geht fuer ein Thema OHNE Aussage hinaus? Rueckgabe -1, -999 oder null ("kein
+ * Fehlwert" - das Thema verhaelt sich wie bisher).
+ *
+ *   Zustand (zd_mqtt_retain())    null: zd_mqtt_senden() macht daraus "-" retained (Entscheidung 5, Regeln/07
+ *                                 "ein leerer Zustand geht als - hinaus") - soc, soll, sollok, Grenzen,
+ *                                 acmodus, packs, Zaehlerstaende, pack/<SN>/soc, summe/soc|kapaz|restkwh
+ *   temp, pack/<SN>/temp          -999: -1 Grad ist eine echte Temperatur (Hausform -999 wie haus/klima)
+ *   batp, summe/batp, pack/watt   null: vorzeichenbehaftet (batp positiv = laedt, negativ = entlaedt; das
+ *                                 Vorzeichen der Packleistung ist nicht belegt) - -1 W ist eine echte
+ *                                 Leistung. Sie gehen ohne Aussage wie bisher gar nicht hinaus (so wie
+ *                                 BREITE/LAENGE bei BYD 0.9.29); ob sie gelten, sagen online und ok.
+ *   jeder andere Messwert         -1: pv, haus, netz, laden, entladen, dvolt, ms, pack/<SN>/volt|dvolt,
+ *                                 summe/pv|haus|netz (alle ohne Vorzeichen)
+ *
+ * Bis 0.9.37 ging ein Messwert ohne Aussage gar nicht hinaus - in Loxone stand der letzte Wert und sah gemessen
+ * aus. Ein Geraet, das nicht ok ist, sendet weiter keine Messwerte (M7, auch keine -1): das sagt online.
+ * Gilt nur fuer MQTT; das Abbild loxone.json (HTTP-Statuszeile) traegt weiter null bzw. den Strich.
+ */
+function zd_mqtt_fehlwert($thema)
+{
+    if (zd_mqtt_retain($thema)) {
+        return null;
+    }
+    $t = preg_replace('#^geraet[0-9]+/#', 'geraetN/', (string) $thema);
+    $t = preg_replace('#^geraetN/pack/[^/]+/#', 'geraetN/pack/<SN>/', $t);
+    if ($t === 'geraetN/temp' || $t === 'geraetN/pack/<SN>/temp') {
+        return -999;
+    }
+    if (in_array($t, array('geraetN/batp', 'summe/batp', 'geraetN/pack/<SN>/watt'), true)) {
+        return null;
+    }
+    return -1;
+}
+
+/** Ein Wert fuer MQTT nach der -1-Regel: mit Aussage unveraendert, ohne Aussage der Fehlwert (zd_mqtt_fehlwert()). */
+function zd_mqtt_messwert($thema, $v)
+{
+    if ($v !== null && zd_mqtt_wert_saeubern($v) !== '') {
+        return $v;
+    }
+    $f = zd_mqtt_fehlwert($thema);
+    return $f === null ? $v : $f;
+}
+
+/**
  * Die Paare eines Durchgangs (seit 0.9.28 hier statt im Dienst, damit der
  * Reiter Test dieselbe Funktion gegen die Themenliste halten kann - M10).
  *
@@ -3906,6 +3978,10 @@ function zd_mqtt_lebenszeichen($ts, $zaehler)
  *
  * M3: Summenthemen, die frueher gesendet wurden, bekommen bei nur noch einem
  * Geraet "keine Aussage" (null, in zd_mqtt_senden() zu "-").
+ *
+ * -1-Regel (Nachtrag 0.9.38, 29.10.2026): zum Schluss geht jeder Wert durch zd_mqtt_messwert() - ein
+ * Messwert ohne Aussage wird -1 (Temperatur -999), ein Zustand bleibt null ("-"). Das Abbild $werte und damit
+ * die HTTP-Statuszeile bleiben unberuehrt.
  */
 function zd_mqtt_paare(array $werte, array $geraete, array $cfg, $ok, $praefix)
 {
@@ -3963,6 +4039,10 @@ function zd_mqtt_paare(array $werte, array $geraete, array $cfg, $ok, $praefix)
                 $paare['summe/' . $sf] = null;
             }
         }
+    }
+    // -1-Regel (Nachtrag 0.9.38): Messwert ohne Aussage -> -1 bzw. -999, Zustand bleibt null ("-").
+    foreach ($paare as $k => $v) {
+        $paare[$k] = zd_mqtt_messwert($k, $v);
     }
     return $paare;
 }
@@ -4458,7 +4538,7 @@ function zd_mqtt_senden(array $paare, $praefix)
             $v = '-';
         }
         if ($v === null || $v === '') {
-            continue;   // fehlender Messwert: nichts senden statt eine erfundene 0
+            continue;   // ohne Aussage und ohne Fehlwert (batp, Packleistung - zd_mqtt_fehlwert()): nichts senden
         }
         /* GESAEUBERT wird vor der Frage "ist er leer?", nicht danach. Ein
            Wert aus lauter Leerzeichen faellt oben nicht durch ($v !== ''),
@@ -5061,6 +5141,14 @@ function zd_vorlagen_paket()
         $v = zd_vorlage_summe();
         $zip->addFromString($v[0], $v[1]);
     }
+    /* Gruppe 43 (0.9.38): die Befehle ueber MQTT (Ausgang an den UDP-Eingang des Gateways), wenn eingeschaltet. */
+    $zd_c43 = zd_config(false);
+    if (!empty($zd_c43['befehle_mqtt_ein'])) {
+        $v = zd_vorlage_bruecke();
+        if ($v !== null) {
+            $zip->addFromString($v[0], $v[1]);
+        }
+    }
     $zip->close();
     $inhalt = (string) @file_get_contents($tmp);
     @unlink($tmp);
@@ -5200,4 +5288,1122 @@ function zd_t($schluessel)
     }
     $teile = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$teile[0]][$teile[1]]) ? $texte[$teile[0]][$teile[1]] : $schluessel;
+}
+
+/* ==================================================================
+ * Gruppe 43 (0.9.38, 29.10.2026): Hausform - Annahmefunktion fuer HTTP und MQTT, Befehlsbruecke 1.0.2, Gateway V2,
+ * Anbieter haus/speicher mit Anbieterregel, endpunkt_ein, Gesundheit
+ *
+ * Bauvorschrift wz_bild/GRUPPE43_BAUVORSCHRIFT.md Abschnitt 3 (Z1-Z6); Entscheidungen ENTSCHEIDUNGEN_GRUPPEN42_44.md
+ * mit ENTWURF_GRUPPE43_TIBBER_ZENDURE.md (E2, E7-E11, B1-B3). Abschriften: Haus-Sitzung, Anbieter und Leser von
+ * tb_haus_*() (Spotpreis Tibber 0.9.33, selbst Abschrift aWATTar/Marstek), V2-Pruefzeile von tb_v2_*(), Bruecke nach
+ * marstek_bruecke_*() (Marstek Venus E 1.1.28), Gesundheit nach rn_gesund_*() (Renault NG 2.1.20). Die Anbieterregel
+ * selbst steht im gemeinsamen Stueck haus_anbieter.php (hanb_*(), byte-gleich in allen Anbieter-Linien).
+ * ================================================================== */
+
+/** Der Name dieser Linie in haus/speicher/anbieter (E7: zendure, retained, immer). */
+define('ZD_HAUS_NAME', 'zendure');
+
+/** Das wirksame MQTT-Praefix - wie der Dienst es bildet (zd_abbild_schreiben(): trim '/', leer -> zendure). */
+function zd_praefix($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = zd_config(false); }
+    $p = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''), '/');
+    return $p === '' ? 'zendure' : $p;
+}
+
+/* ---------- Z3: eine Annahmefunktion fuer HTTP (index.php) und MQTT (Befehlsbruecke) ---------- */
+
+/**
+ * Jede Abweisung ins Protokoll, mit der Adresse des Anrufers, hoechstens eine Zeile je Minute und Grund; nie das
+ * Token (Befund Code 8, 29.09.2026). Bis 0.9.37 in index.php - seit 0.9.38 hier, weil zd_befehl_annehmen() sie auch
+ * fuer den MQTT-Weg braucht. Wortgleich; ohne REMOTE_ADDR (MQTT) steht "?" als Adresse.
+ */
+function zd_ep_abweisung($grund, $aktion = '')
+{
+    $wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9A-Fa-f:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
+    $akt = is_string($aktion) ? substr(preg_replace('/[^a-z0-9_]/i', '', $aktion), 0, 20) : '';
+    zd_log_gebremst('ep_' . strtolower($grund), 'Endpunkt: Anfrage von ' . ($wer === '' ? '?' : $wer)
+        . ' abgewiesen, Grund ' . $grund . ($akt !== '' ? ', Aktion ' . $akt : '') . '.', 60);
+}
+
+/**
+ * Einen schaltenden Befehl annehmen - der Schaltteil des Endpunkts index.php (bis 0.9.37 dort ab "Erst die Anfrage,
+ * dann Freigabe und Dienst"), herausgezogen OHNE die Wirkung des HTTP-Wegs zu aendern: dieselbe Reihenfolge der
+ * Pruefungen (Wert fehlt 400, Geraet 404, Freigabe 403, Dienst 503, Schreiber-Wache 409, Sofortabruf-Bremse,
+ * Gleichwert-Unterdrueckung, Einreihen), dieselben Antwortzeilen, HTTP-Codes und Protokollzeilen (Probe: Antworten
+ * byte-gleich mit 0.9.37). Der Endpunkt prueft vorher Token, Aktion und Muster; die Befehlsbruecke ruft dieselbe
+ * Funktion mit Quelle 'mqtt' und von=mqtt (bin/befehle_zuordnung.php, E8).
+ *   $aktion  laden|entladen|aus|socmin|socmax|grenzeaus|grenzeein|abruf
+ *   $nr      Geraetenummer als Zeichenkette ohne fuehrende Null, $watt/$prozent '' oder Ziffern, $dry true|false,
+ *   $von     Kennung der Schreiber-Wache ('' = ohne), $cfg Konfiguration (null = zd_config(false))
+ * Rueckgabe array('http' => Code, 'aus' => vollstaendige Antwort, 'ok' => OK-Wert der ersten Zeile).
+ */
+function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = null, $quelle = 'http')
+{
+    if (!is_array($cfg)) { $cfg = zd_config(false); }
+    $aus = function ($http, $text) {
+        return array('http' => (int) $http, 'aus' => (string) $text,
+                     'ok' => preg_match('/;OK=([0-9])/', (string) $text, $m) ? (int) $m[1] : 0);
+    };
+    $ab = function ($grund) use ($aktion, $quelle) {
+        if ($quelle === 'mqtt') {
+            zd_log_gebremst('mq_' . strtolower($grund), 'Befehlsbruecke: Befehl ' . preg_replace('/[^a-z0-9_]/i', '', (string) $aktion)
+                . ' abgewiesen, Grund ' . $grund . '.', 60);
+        } else {
+            zd_ep_abweisung($grund, $aktion);
+        }
+    };
+    $befehl = array('aktion' => $aktion, 'geraet' => (int) $nr);
+    if ($dry) {
+        $befehl['trocken'] = 1;
+    }
+    if (in_array($aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), true)) {
+        if ((string) $watt === '') {
+            $ab('WATT_FEHLT');
+            return $aus(400, "SET;OK=0;GRUND=WATT_FEHLT\n");
+        }
+        $befehl['watt'] = (int) $watt;
+    } elseif (in_array($aktion, array('socmin', 'socmax'), true)) {
+        if ((string) $prozent === '') {
+            $ab('PROZENT_FEHLT');
+            return $aus(400, "SET;OK=0;GRUND=PROZENT_FEHLT\n");
+        }
+        $befehl['prozent'] = (int) $prozent;
+    }
+    $ger = zd_geraete();
+    if (!isset($ger[$nr])) {
+        $ab('GERAET_UNBEKANNT');
+        return $aus(404, sprintf("SET;OK=0;AKTION=%s;GRUND=GERAET_UNBEKANNT;N=%d\n", $aktion, count($ger))
+            . sprintf("Geraet %d ist nicht eingerichtet (eingerichtet: %d) - es wurde nichts gesendet. Reiter Einstellungen.\n",
+                      (int) $nr, count($ger)));
+    }
+    if ($aktion !== 'abruf' && !$dry && empty($cfg['steuerung_ein'])) {
+        $ab('STEUERUNG_AUS');
+        return $aus(403, "SET;OK=0;GRUND=STEUERUNG_AUS\n"
+            . "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n");
+    }
+    if (zd_dienst_pid() === 0) {
+        $ab('DIENST_LAEUFT_NICHT');
+        return $aus(503, "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n"
+            . "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n");
+    }
+    $wz = '';
+    if (zd_wache_gilt($aktion)) {
+        list($wab, $wz) = zd_wache_anwenden($ger[$nr], $aktion, $von, $dry);
+        if ($wab) {
+            $ab('FREMDSCHREIBER');
+            return $aus(409, 'SET;OK=0;AKTION=' . $aktion . ';GRUND=FREMDSCHREIBER' . ($dry ? ';DRY=1' : '') . "\n"
+                . "Dieser Schreiber steht nicht in der Liste der erlaubten Schreiber (Reiter Einstellungen, Schreiber-Wache) - es wurde nichts eingereiht.\n");
+        }
+    }
+    if ($aktion === 'abruf') {
+        $lox = zd_loxone();
+        $abstand = max(10, (int) floor(max(5, (int) $cfg['intervall']) / 2));
+        $warten = 0;
+        $fh = @fopen(zd_paths()['datadir'] . '/.abruf_endpunkt', 'c+');
+        if ($fh !== false) {
+            if (@flock($fh, LOCK_EX)) {
+                $letzt = (int) trim((string) stream_get_contents($fh));
+                $basis = max($letzt, isset($lox['ts']) ? (int) $lox['ts'] : 0);
+                $warten = $basis + $abstand - time();
+                if ($warten <= 0) {
+                    ftruncate($fh, 0);
+                    rewind($fh);
+                    fwrite($fh, (string) time());
+                    fflush($fh);
+                }
+                flock($fh, LOCK_UN);
+            }
+            fclose($fh);
+        }
+        if ($warten > 0) {
+            return $aus(200, sprintf("SET;OK=1;AKTION=abruf;GRUND=ZU_FRUEH;WARTEN=%d;ALTER=%d\n", $warten, zd_alter())
+                . 'Hoechstens ein Sofortabruf je ' . $abstand . " s - es gilt das vorhandene Abbild.\n");
+        }
+    }
+    $gw_schl = zd_gleichwert_schluessel($befehl);
+    $gw = null;
+    $gw_merker = array();
+    $gw_wert = zd_gleichwert_wert($befehl);
+    if ($gw_schl !== '') {
+        $gw = zd_gleichwert_oeffnen();
+        if ($gw === false) {
+            $ab('GLEICHWERT_MERKER');
+            return $aus(503, zd_wache_zeile('SET;OK=0;AKTION=' . $aktion . ";GRUND=GLEICHWERT_MERKER\n", $wz)
+                . "Der Merker der Gleichwert-Unterdrueckung laesst sich nicht oeffnen - es wurde nichts gesendet. Protokoll im Reiter Logdateien.\n");
+        }
+        $gw_merker = zd_gleichwert_lesen($gw);
+        $seit = zd_gleichwert_seit($gw_merker, $gw_schl, $gw_wert);
+        if ($seit >= 0) {
+            zd_gleichwert_schliessen($gw, null);
+            return $aus(200, zd_wache_zeile(sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
+                $aktion, $seit, $seit), $wz));
+        }
+    }
+    list($erg, $meldung) = zd_befehl_absetzen($befehl);
+    if ($gw !== null) {
+        zd_gleichwert_schliessen($gw, zd_gleichwert_nachher($gw_merker, $gw_schl, $gw_wert, $erg === 1));
+    }
+    return $aus($erg === 0 ? 500 : 200, zd_wache_zeile(sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $erg, $aktion,
+        str_replace(array("\r", "\n", ';'), ' ', $meldung)), $wz));
+}
+
+/**
+ * Das Ergebnis von zd_befehl_annehmen() fuer die Quittung der Befehlsbruecke: array(bool ok, string grund).
+ * "angenommen" bei OK=1 (auch UNVERAENDERT=1 und abruf ZU_FRUEH); sonst GRUND der ersten Zeile (z. B.
+ * GERAET_UNBEKANNT, STEUERUNG_AUS, FREMDSCHREIBER, DIENST_LAEUFT_NICHT) oder die Meldung des Dienstes (gekuerzt).
+ */
+function zd_befehl_quittung(array $e)
+{
+    $z = (string) strtok((string) (isset($e['aus']) ? $e['aus'] : ''), "\n");
+    if (!empty($e['ok']) && (int) $e['ok'] === 1) {
+        return array(true, '');
+    }
+    if (preg_match('/;GRUND=([A-Za-z0-9_]+)/', $z, $m)) {
+        return array(false, $m[1]);
+    }
+    if (preg_match('/;OK=2;/', $z)) {
+        return array(false, 'Dienst antwortet nicht rechtzeitig - der Befehl liegt in der Warteschlange');
+    }
+    if (preg_match('/;MELDUNG=(.*)$/', $z, $m)) {
+        return array(false, substr(trim($m[1]), 0, 120));
+    }
+    return array(false, 'abgelehnt');
+}
+
+/**
+ * Ist diese Datei ein Auftrag der Warteschlange? Nur <16 Hexziffern>.json - so benennt zd_befehl_absetzen() jeden
+ * Auftrag (bin2hex(random_bytes(8))). Seit 0.9.38 liegen im selben Ordner data/plugins/<ordner>/befehle auch die
+ * Dateien der Befehlsbruecke (zustand.json, waechter.json, mosquitto/ - Stamm 1.0.2, Pfad fest): bis 0.9.37 nahm der
+ * Dienst JEDE *.json als Auftrag, las sie, loeschte sie und schrieb eine Fehlantwort (Befund G43-Z-B5).
+ */
+function zd_auftrag_datei($datei)
+{
+    return preg_match('/^[0-9a-f]{16}\.json\z/', basename((string) $datei)) === 1;
+}
+
+/* ---------- Z3: Befehlsbruecke (gemeinsames Modul, bin/befehlsbruecke.php) ---------- */
+
+/** Der bin-Ordner mit der Befehlsbruecke: installiert <wurzel>/bin/plugins/<ordner>, im ausgepackten Archiv bin/ neben
+ *  webfrontend/. '' = nicht vorhanden. Abschrift marstek_bin_dir(). */
+function zd_bin_dir()
+{
+    $p = zd_paths();
+    if ($p['home'] !== '') {
+        $d = $p['home'] . '/bin/plugins/' . $p['plugin'];
+        if (is_file($d . '/befehlsbruecke.php')) { return $d; }
+    }
+    $d = dirname(dirname(__DIR__)) . '/bin';
+    return is_file($d . '/befehlsbruecke.php') ? $d : '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN) und die Zuordnung holen und pruefen. array(Tabelle|null, Fehler). */
+function zd_befehle_tabelle()
+{
+    $bin = zd_bin_dir();
+    if ($bin === '') { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    if (!function_exists('bb_zuordnung_laden')) {
+        if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+        require_once $bin . '/befehlsbruecke.php';
+    }
+    list($z, $fehler) = bb_zuordnung_laden($bin . '/befehle_zuordnung.php');
+    if ($z === null) { return array(null, $fehler); }
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) { return array(null, $fehl[0]); }
+    return array($z, '');
+}
+
+/** Die Bruecke beim Speichern sofort starten bzw. anhalten (befehlsbruecke.sh start|stop); der Waechter im Minutentakt
+ *  (cron/cron.01min) startet hoechstens alle 600 s neu. array(rc, Ausgabe). Abschrift marstek_bruecke_schalten(). */
+function zd_bruecke_schalten($an)
+{
+    list($z, $fehler) = zd_befehle_tabelle();
+    if ($z === null) { return array(1, $fehler); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, 'keine LoxBerry-Installation erkannt'); }
+    return bb_sh($p, $an ? 'start' : 'stop');
+}
+
+/** Die Befehlsliste aus bb_liste() - EINE Quelle fuer Reiter MQTT, Vorlage und Musterprojekt. array(Liste|null, Fehler). */
+function zd_befehle_liste()
+{
+    list($z, $fehler) = zd_befehle_tabelle();
+    if ($z === null) { return array(null, $fehler); }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/** Die Vorlage der MQTT-Befehle (eigener Ausgang an den UDP-Eingang des Gateways, bb_vorlage()). array(name, inhalt)|null. */
+function zd_vorlage_bruecke()
+{
+    list($l) = zd_befehle_liste();
+    if ($l === null) { return null; }
+    $m = zd_mqtt_zustand();
+    $port = (int) $m['udpport'];
+    return array('VQ_zendure_mqtt.xml', bb_vorlage($l, zd_host(), $port > 0 ? $port : 11884));
+}
+
+/** Zustand der Bruecke fuer Reiter MQTT, Reiter Test und Healthcheck: array(true laeuft | false steht/defekt | null aus,
+ *  Text). Abschrift marstek_bruecke_zustand(). */
+function zd_bruecke_zustand()
+{
+    list($z, $fehler) = zd_befehle_tabelle();
+    if ($z === null) {
+        return array(false, sprintf(zd_t(zd_bin_dir() === '' ? 'BEFEHL.Z_FEHLT' : 'BEFEHL.Z_DEFEKT'), $fehler));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) { return array(null, zd_t('BEFEHL.Z_AUS')); }
+    if ($soll !== 0) { return array(false, sprintf(zd_t('BEFEHL.Z_DEFEKT'), $grund)); }
+    $zu = bb_zustand_lesen();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : -1;
+    if (!bb_dienste() || $alter < 0 || $alter > BB_WACHE_GRENZE || empty($zu['abo'])) {
+        $warum = (is_array($zu) && !empty($zu['fehler'])) ? ' (' . $zu['fehler'] . ')' : '';
+        return array(false, sprintf(zd_t('BEFEHL.Z_STEHT'), $warum));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $letzter = '';
+    if (isset($zu['letzter']) && is_array($zu['letzter']) && isset($zu['letzter']['name'])) {
+        $letzter = sprintf(zd_t('BEFEHL.Z_LETZTER'), (string) $zu['letzter']['name'],
+            (string) (isset($zu['letzter']['ergebnis']) ? $zu['letzter']['ergebnis'] : ''),
+            max(0, time() - (int) (isset($zu['letzter']['zeit']) ? $zu['letzter']['zeit'] : time())));
+    }
+    return array(true, sprintf(zd_t('BEFEHL.Z_LAEUFT'), date('d.m.Y H:i', (int) (isset($zu['start']) ? $zu['start'] : 0)),
+        (int) (isset($zl['angenommen']) ? $zl['angenommen'] : 0), (int) (isset($zl['abgelehnt']) ? $zl['abgelehnt'] : 0),
+        $letzter));
+}
+
+/* ---------- Z1: Gateway V2 - Namenstabelle, Hakenliste, Pruefzeile ---------- */
+
+/** Der Name, den das MQTT-Gateway einem Thema gibt: "/", "%" und Leerzeichen werden "_" (Regeln/07 :69). */
+function zd_gateway_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/**
+ * Die Datenpunkte, die unter Gateway V2 anzuhaken sind - EINE Quelle fuer Reiter MQTT, Reiter Test, Healthcheck und
+ * Messskript. Rueckgabe Liste von array('thema', 'name', 'noncached', 'bez'). Quelle ist zd_mqtt_themen() - dieselbe
+ * Liste, die der Reiter Test gegen zd_mqtt_paare() haelt (M10) -, ausgerollt auf die eingetragenen Geraete:
+ *   - geraetN/pack/<SN>/... NIE (Seriennummer im Namen - weder Hakenliste noch Vorgaben noch Musterprojekt, E/Z1)
+ *   - summe/* nur ab zwei Geraeten (zd_mqtt_paare() sendet sie nur dann), energie/* nur mit energie_ein
+ *   - status/ts nicht (Zeitstempel, aendert sich je Lauf - Regeln/07 :267)
+ *   - status/befehle (Lebenszeichen der Befehlsbruecke) nur mit "Befehle ueber MQTT annehmen"
+ * Noncached genau ok, status/zaehler und status/befehle.
+ */
+function zd_v2_haken($cfg = null, $geraete = null)
+{
+    if (!is_array($cfg)) { $cfg = zd_config(false); }
+    if (!is_array($geraete)) { $geraete = zd_geraete(); }
+    $pf = zd_praefix($cfg);
+    $nrn = array_keys($geraete);
+    sort($nrn);
+    $nc = array('ok' => true, 'status/zaehler' => true, 'status/befehle' => true);
+    $aus = array();
+    $dazu = function ($t, $bez) use (&$aus, $pf, $nc) {
+        $th = $pf . '/' . $t;
+        $aus[] = array('thema' => $th, 'name' => zd_gateway_name($th), 'noncached' => isset($nc[$t]), 'bez' => $bez);
+    };
+    foreach (zd_mqtt_themen() as $t => $bez) {
+        if ($t === 'status/ts' || strpos($t, '/pack/') !== false) { continue; }
+        if (strpos($t, 'summe/') === 0 && count($nrn) < 2) { continue; }
+        if (strpos($t, '/energie/') !== false && empty($cfg['energie_ein'])) { continue; }
+        if (strpos($t, 'geraetN/') === 0) {
+            foreach ($nrn as $n) {
+                $r = 'geraet' . (int) $n . substr($t, 7);
+                if (strpos($r, '<feld>') !== false) {
+                    foreach (array_keys(zd_energiefelder()) as $f) { $dazu(str_replace('<feld>', $f, $r), $bez); }
+                } else {
+                    $dazu($r, $bez);
+                }
+            }
+            continue;
+        }
+        $dazu($t, $bez);
+    }
+    if (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_ein'])) {
+        $dazu('status/befehle', 'BEFEHL.T_LEBENSZEICHEN');
+    }
+    return $aus;
+}
+
+/** Die angehakten Datenpunkte aus subscriptions.json: Id => noncached; null = unlesbar. Abschrift tb_v2_abos(). */
+function zd_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/** Soll gegen Ist: array(1|0, fehlt[], noncached_falsch[], da, soll). Abschrift tb_v2_haken_abgleich(). */
+function zd_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ((bool) $abo[$e['thema']] !== (bool) $e['noncached']) {
+            $nc[] = $e['name'] . ($e['noncached'] ? ' (Noncached fehlt)' : ' (Noncached zu viel)');
+        }
+    }
+    return array(($fehlt || $nc) ? 0 : 1, $fehlt, $nc, $da, count($soll));
+}
+
+/**
+ * Einheitliche Pruefzeile "Gateway V2: sind alle Datenpunkte angehakt?": array(1|0|2, Text); 2 = grau (nicht
+ * feststellbar, Gateway V1, leere Liste, noch nicht eingerichtet). Liest nur. Die Argumente nach $cfg nur fuer Proben.
+ * "eingerichtet" heisst hier: ein Geraet eingetragen UND "Werte ueber MQTT" an (vorher kommt kein Wert).
+ */
+function zd_v2_haken_lage($cfg = null, $soll = null, $abo = false, $fassung = null, $eingerichtet = null)
+{
+    if (!is_array($cfg)) { $cfg = zd_config(false); }
+    if ($fassung === null) {
+        $g = zd_gateway_fassung();
+        $fassung = !empty($g['gefunden']) ? (int) $g['fassung'] : 0;
+    }
+    if ((int) $fassung <= 0) { return array(2, zd_t('TEST.V2_UNKLAR')); }
+    if ((int) $fassung < 2) { return array(2, zd_t('TEST.V2_V1')); }
+    if ($soll === null) { $soll = zd_v2_haken($cfg); }
+    if ($eingerichtet === null) { $eingerichtet = count(zd_geraete()) > 0 && !empty($cfg['mqtt_ein']); }
+    if (!$eingerichtet) { return array(2, zd_t('TEST.V2_NICHT_EINGERICHTET')); }
+    if (!$soll) { return array(2, zd_t('TEST.V2_LEER')); }
+    if ($abo === false) {
+        $p = zd_paths();
+        $f = $p['home'] !== '' ? $p['home'] . '/config/system/subscriptions.json' : '';
+        $abo = ($f !== '' && is_file($f)) ? zd_v2_abos(json_decode((string) @file_get_contents($f), true)) : null;
+    }
+    if ($abo === null) { return array(2, zd_t('TEST.V2_UNKLAR')); }
+    list($ok, $fehlt, $nc, $da, $zahl) = zd_v2_haken_abgleich($soll, $abo);
+    $txt = sprintf(zd_t('TEST.V2_ZAHL'), $da, $zahl);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(zd_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' ...' : ''));
+    }
+    if ($nc) { $txt .= ' ' . sprintf(zd_t('TEST.V2_NC'), implode(', ', $nc)); }
+    return array($ok, $txt);
+}
+
+/* ---------- Haus-Themen: eine kurze Sitzung am Broker ---------- */
+
+/**
+ * Eine kurze Sitzung am Broker des LoxBerry - Abschrift von tb_haus_sitzung() (Tibber 0.9.33, selbst Abschrift von
+ * spot_haus_sitzung()/marstek_haus_sitzung()). EINE Funktion fuer den Anbieter (senden), den Knopf, das Abraeumen und
+ * den Leser. Zugang aus general.json (Mqtt.Brokerhost/-port/-user/-pass) - NICHT der Broker der Geraete
+ * (broker_host/-user dieser Konfiguration). Das Kennwort steht nur im CONNECT-Paket, nie in einem Protokoll und nie auf
+ * einer Befehlszeile (Regeln/05). Client-ID 'zdhaus<pid>'.
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen; SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden, hoechstens 66
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte', 'live', 'gesendet').
+ */
+function zd_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = zd_paths();
+    $gj = $p['home'] !== '' ? $p['home'] . '/config/system/general.json' : '';
+    if ($gj === '' || !is_file($gj)) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($gj), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(66.0, (float) $fenster));
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $schreib = function ($daten) use ($s) {
+        $daten = (string) $daten;
+        return @fwrite($s, $daten) === strlen($daten);
+    };
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('zdhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (!$schreib(chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz)) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $sub = pack('n', 1);
+        foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+        $schreib(chr(0x82) . $laenge(strlen($sub)) . $sub);
+        $lage = 'zeit';
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($soll)) { break; }
+                $lage = 'ok';
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+                }
+                break;
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        $suback_zeit = microtime(true);
+    }
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if ($schreib(chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf)) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll) {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    $schreib(chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/* ---------- Z2: Anbieter haus/speicher (Regeln/07 Nr. 15) mit Anbieterregel (E4/E7) ---------- */
+
+/** Die eigenen Haus-Themen, Thema => retained. EINE Liste fuer Senden, Abraeumen und Reiter Test (fuenf retained:
+ *  vier Werte + anbieter, E7; zaehler nie retained). */
+function zd_haus_themen()
+{
+    return array('haus/speicher/soc' => true, 'haus/speicher/kwh' => true, 'haus/speicher/leistung' => true,
+                 'haus/speicher/richtung' => true, 'haus/speicher/anbieter' => true, 'haus/speicher/zaehler' => false);
+}
+
+function zd_haus_retained()
+{
+    return array_keys(array_filter(zd_haus_themen()));
+}
+
+/** Eine Zahl fuer haus/speicher: Punkt, hoechstens drei Nachkommastellen, nie Exponent (Abschrift tb_haus_zahl()). */
+function zd_haus_zahl($v)
+{
+    $s = sprintf('%.3F', round((float) $v, 3));
+    if (strpos($s, '.') !== false) { $s = rtrim(rtrim($s, '0'), '.'); }
+    return ($s === '-0' || $s === '') ? '0' : $s;
+}
+
+/**
+ * Die Werte der Haus-Themen (E7, Regeln/07 Nr. 15). Quelle: das Abbild des Dienstes ($werte wie zd_werte(), Nr =>
+ * Werte je Geraet) und die Geraeteliste (Kapazitaet). Ohne Aussage alle vier -1: kein Geraet eingetragen, ein Geraet
+ * antwortet nicht (ok 0) oder seine Messung ist aelter als 180 s, oder der Ladezustand fehlt.
+ *   soc      ein Geraet: dessen soc (auch ohne eingetragene Kapazitaet); mehrere: nach Kapazitaet gewichtet wie
+ *            summe/soc (zd_summe(), fehlt eine Kapazitaet -> -1)
+ *   kwh      Restinhalt in kWh (zd_summe() restkwh; ohne Kapazitaet -1)
+ *   leistung Betrag der Batterieleistung in W (Summe von batp, positiv = laden, R07 :291)
+ *   richtung 1 laedt (> 20 W), 0 ruht, 2 entlaedt (< -20 W) - wie Marstek Venus E
+ *   anbieter IMMER zendure (Anbieterregel E4: der Anspruch muss lesbar bleiben, auch ohne Werte)
+ */
+function zd_haus_werte($werte, $geraete, $zaehler)
+{
+    $leer = array('soc' => '-1', 'kwh' => '-1', 'leistung' => '-1', 'richtung' => '-1');
+    $w = $leer;
+    $werte = is_array($werte) ? $werte : array();
+    $gut = count($werte) > 0;
+    foreach ($werte as $x) {
+        $alter = isset($x['alter']) ? (int) $x['alter'] : -1;
+        if (empty($x['ok']) || $alter < 0 || $alter > 180) { $gut = false; }
+    }
+    if ($gut) {
+        $s = zd_summe($werte, is_array($geraete) ? $geraete : array());
+        $soc = null;
+        if (count($werte) === 1) {
+            $eins = reset($werte);
+            $soc = (isset($eins['soc']) && is_numeric($eins['soc'])) ? (float) $eins['soc'] : null;
+        } else {
+            $soc = $s['soc'] !== null ? (float) $s['soc'] : null;
+        }
+        if ($soc !== null && $soc >= 0 && $soc <= 100 && $s['batp'] !== null) {
+            $b = (int) $s['batp'];
+            $w = array('soc' => zd_haus_zahl(round($soc, 1)),
+                       'kwh' => $s['restkwh'] !== null ? zd_haus_zahl($s['restkwh']) : '-1',
+                       'leistung' => (string) abs($b),
+                       'richtung' => $b > 20 ? '1' : ($b < -20 ? '2' : '0'));
+        }
+    }
+    return array(
+        'haus/speicher/soc'      => $w['soc'],
+        'haus/speicher/kwh'      => $w['kwh'],
+        'haus/speicher/leistung' => $w['leistung'],
+        'haus/speicher/richtung' => $w['richtung'],
+        'haus/speicher/anbieter' => ZD_HAUS_NAME,
+        'haus/speicher/zaehler'  => (string) ((((int) $zaehler) % 1000 + 1000) % 1000),
+    );
+}
+
+/** Vollversand oder nur Geaendertes; zaehler immer und nie retained. Abschrift tb_haus_auswahl(). */
+function zd_haus_auswahl($werte, $merker, $voll)
+{
+    $th = zd_haus_themen();
+    $aus = array();
+    foreach ($werte as $t => $v) {
+        if (empty($th[$t])) { $aus[$t] = array((string) $v, false); continue; }
+        if ($voll || !is_array($merker) || !array_key_exists($t, $merker) || (string) $merker[$t] !== (string) $v) {
+            $aus[$t] = array((string) $v, true);
+        }
+    }
+    return $aus;
+}
+
+function zd_haus_merker_datei()   { return zd_paths()['datadir'] . '/.haus_letzte.json'; }
+function zd_haus_sitzung_datei()  { return zd_paths()['datadir'] . '/haus_sitzung.json'; }
+function zd_haus_zustand_datei()  { return zd_paths()['datadir'] . '/haus_anbieter.json'; }
+function zd_haus_quellen_datei()  { return zd_paths()['datadir'] . '/haus_quellen.json'; }
+
+/** Der Zustand der Anbieterregel (hanb_zustand()) - im Datenordner, uebersteht ein Update (preupgrade.sh). */
+function zd_haus_zustand()
+{
+    $d = zd_json_lesen(zd_haus_zustand_datei());
+    return hanb_zustand(is_array($d) ? $d : array());
+}
+
+/** Den Zustand ablegen; ein Wechsel von Rolle, Grund oder fremdem Namen geht einmal ins Protokoll. */
+function zd_haus_zustand_setzen(array $z)
+{
+    $alt = zd_haus_zustand();
+    $z = hanb_zustand($z);
+    if ($alt['rolle'] !== $z['rolle'] || $alt['grund'] !== $z['grund'] || $alt['fremd'] !== $z['fremd']) {
+        zd_log('Haus-Themen haus/speicher: Rolle ' . $z['rolle'] . ($z['grund'] !== '' ? ' (' . $z['grund'] . ')' : '')
+               . ($z['fremd'] !== '' ? ', Anbieter ' . preg_replace('/[^a-z0-9_.-]/i', '?', $z['fremd']) : '') . '.');
+    }
+    return zd_json_schreiben(zd_haus_zustand_datei(), $z);
+}
+
+/** Den Merker "war Anbieter" (_haus_frueher, in der Konfiguration - uebersteht ein Update) setzen oder entfernen. */
+function zd_haus_frueher_setzen($ja)
+{
+    $c = zd_config();
+    if ((int) !empty($c['_haus_frueher']) === ($ja ? 1 : 0)) { return false; }
+    if ($ja) { $c['_haus_frueher'] = 1; } else { unset($c['_haus_frueher']); }
+    return zd_config_speichern($c);
+}
+
+/**
+ * Anbieter haus/speicher (aus dem Dienst, je MINUTE ueber zd_haus_takt(), nicht je Durchgang). Nur mit
+ * haus_speicher_ein = 1 UND mqtt_ein = 1 UND erkannter Wurzel. Die Anbieterregel (hanb_lage()) entscheidet nach dem
+ * Stand des Lesers (haus_quellen.json, Quelle 'speicher'), ob diese Installation sendet: wartet sie, geht NICHTS hinaus
+ * (auch kein Zaehler); wurde sie abgeloest, faellt der Merker "war Anbieter". Haken oder MQTT aus: hoechstens alle 10
+ * Minuten abraeumen, wenn diese Installation Anbieter war (hanb_darf_abraeumen()). Senden: Geaendertes, voll ohne
+ * Merker und alle 30 Minuten, haus/speicher/zaehler in jeder Sitzung (derselbe Zaehler wie status/zaehler).
+ */
+function zd_haus_lauf($cfg, $werte, $geraete, $zaehler, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $p = zd_paths();
+    $mf = zd_haus_merker_datei();
+    $z_alt = zd_haus_zustand();
+    if (empty($cfg['haus_speicher_ein']) || empty($cfg['mqtt_ein']) || $p['home'] === '') {
+        if (is_file($mf)) { @unlink($mf); }
+        $darf = hanb_darf_abraeumen(array('rolle' => 'aus', 'grund' => $z_alt['grund']), !empty($cfg['_haus_frueher']));
+        if ($z_alt['rolle'] !== 'aus') {
+            zd_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => $z_alt['grund'] === 'abgeloest' ? 'abgeloest' : '',
+                                         'fremd' => '', 'seit' => $jetzt));
+        }
+        if ($darf && $p['home'] !== '') {
+            $vf = $p['datadir'] . '/.haus_leeren_versuch';
+            clearstatcache(true, $vf);
+            $alt = is_file($vf) ? (int) filemtime($vf) : 0;
+            if ($alt <= 0 || $alt > time() || time() - $alt >= 600) {
+                @touch($vf);
+                $e = zd_haus_leeren();
+                zd_log('Haus-Themen haus/speicher: Abraeumen im Dienst - ' . $e['lage']
+                    . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+                if (in_array($e['lage'], array('geleert', 'nichts'), true)) { zd_haus_frueher_setzen(false); }
+            }
+        }
+        return null;
+    }
+    $c = zd_haus_quellen();
+    $z = hanb_lage(ZD_HAUS_NAME, isset($c['speicher']) ? $c['speicher'] : array(), $z_alt, $jetzt);
+    zd_haus_zustand_setzen($z);
+    if ($z['rolle'] !== 'anbieter') {
+        if (is_file($mf)) { @unlink($mf); }
+        /* Abgeloest: der Merker faellt immer (zd_haus_frueher_setzen() liest die Datei selbst und schreibt nur bei
+         * Bedarf) - nicht nur, wenn $cfg ihn schon traegt: $cfg kann aelter sein als der Merker (gemessen K4e). */
+        if ($z['grund'] === 'abgeloest') { zd_haus_frueher_setzen(false); }
+        zd_json_schreiben(zd_haus_sitzung_datei(), array('zeit' => $jetzt, 'lage' => 'wartet', 'gesendet' => 0,
+            'voll' => 0, 'soc' => '-1'));
+        return null;
+    }
+    $hw = zd_haus_werte($werte, $geraete, $zaehler);
+    $vorher = null;
+    $voll_zeit = 0;
+    $d = zd_json_lesen($mf);
+    if (is_array($d) && isset($d['werte'], $d['voll']) && is_array($d['werte'])) {
+        $vorher = $d['werte'];
+        $voll_zeit = (int) $d['voll'];
+    }
+    $voll = ($vorher === null || $voll_zeit <= 0 || $voll_zeit > $jetzt || $jetzt - $voll_zeit > 1800);
+    $r = zd_haus_sitzung(zd_haus_auswahl($hw, $vorher, $voll), array(), array(), 0);
+    if ($r['lage'] === 'ok') {
+        $merk = $hw;
+        unset($merk['haus/speicher/zaehler']);
+        zd_json_schreiben($mf, array('werte' => $merk, 'voll' => $voll ? $jetzt : $voll_zeit, 'zeit' => $jetzt));
+        if (empty($cfg['_haus_frueher'])) { zd_haus_frueher_setzen(true); }
+    }
+    zd_json_schreiben(zd_haus_sitzung_datei(), array('zeit' => $jetzt, 'lage' => $r['lage'],
+        'gesendet' => (int) $r['gesendet'], 'voll' => $voll ? 1 : 0, 'soc' => $hw['haus/speicher/soc']));
+    zd_log_gebremst('haus_sitzung_' . ($r['lage'] === 'ok' ? 'ok' : 'fehler'), $r['lage'] === 'ok'
+        ? 'Haus-Themen haus/speicher: Sitzung am Broker ok'
+        : 'Haus-Themen haus/speicher: Broker nicht erreichbar (' . $r['lage'] . ') - naechster Versuch in einer Minute');
+    return $r;
+}
+
+/** Die fuenf retained Themen abraeumen - mit Ruecklesen in eigener Sitzung, bis zu drei Runden, nur die eigenen Namen.
+ *  Rueckgabe array('lage' => geleert|nichts|rest|kein_broker, 'offen', 'grund'). Abschrift tb_haus_leeren(). */
+function zd_haus_leeren($runden = 3)
+{
+    $th = zd_haus_retained();
+    $belegt = function ($w) {
+        $o = array();
+        foreach ($w as $t => $v) { if ((string) $v !== '') { $o[] = $t; } }
+        return $o;
+    };
+    $r = zd_haus_sitzung(array(), $th, array(), 0);
+    if ($r['lage'] !== 'ok') { return array('lage' => 'kein_broker', 'offen' => array(), 'grund' => $r['lage']); }
+    $offen = $belegt($r['werte']);
+    if (!$offen) { return array('lage' => 'nichts', 'offen' => array(), 'grund' => ''); }
+    $lage = 'rest';
+    $grund = '';
+    for ($i = 1; $i <= max(1, (int) $runden); $i++) {
+        $senden = array();
+        foreach ($offen as $t) { $senden[$t] = array('', true); }
+        $r = zd_haus_sitzung($senden, array(), array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        usleep(300000);
+        $r = zd_haus_sitzung(array(), $th, array(), 0);
+        if ($r['lage'] !== 'ok') { $lage = 'kein_broker'; $grund = $r['lage']; continue; }
+        $offen = $belegt($r['werte']);
+        if (!$offen) { return array('lage' => 'geleert', 'offen' => array(), 'grund' => ''); }
+        $lage = 'rest';
+    }
+    return array('lage' => $lage, 'offen' => $offen, 'grund' => $grund);
+}
+
+/**
+ * Folgen einer Aenderung von haus_speicher_ein/mqtt_ein (Reiter MQTT, Zurueckspielen einer Sicherung). Wird die
+ * Installation (wieder) eingeschaltet, verfaellt der Merker. Hoert sie auf und durfte sie abraeumen
+ * (hanb_darf_abraeumen()), raeumt sie mit Ruecklesen ab - wartete sie nur oder wurde sie abgeloest, bleibt alles
+ * stehen (die Themen gehoeren einem anderen). Rueckgabe array(Meldung oder '', ok|warn). Abschrift tb_haus_folgen().
+ */
+function zd_haus_folgen($alt, $neu)
+{
+    $ist = !empty($neu['haus_speicher_ein']) && !empty($neu['mqtt_ein']);
+    $war = !empty($alt['haus_speicher_ein']) && !empty($alt['mqtt_ein']);
+    @unlink(zd_haus_merker_datei());
+    if ($ist) { return array('', 'ok'); }
+    if (!$war && empty($alt['_haus_frueher'])) { return array('', 'ok'); }
+    $z = zd_haus_zustand();
+    $frueher = !empty($alt['_haus_frueher']);
+    if (!hanb_darf_abraeumen($z, $frueher)) {
+        zd_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+        if ($frueher && $z['grund'] === 'abgeloest') { zd_haus_frueher_setzen(false); }
+        return array($z['rolle'] === 'wartet' ? zd_t('HAUS.M_WARTETE') : '', 'ok');
+    }
+    zd_haus_zustand_setzen(array('rolle' => 'aus', 'grund' => '', 'fremd' => '', 'seit' => time()));
+    $e = zd_haus_leeren();
+    zd_log('Haus-Themen haus/speicher: Abraeumen ' . $e['lage']
+        . ($e['offen'] ? ' (' . implode(', ', $e['offen']) . ')' : '') . '.');
+    if ($e['lage'] === 'geleert' || $e['lage'] === 'nichts') {
+        zd_haus_frueher_setzen(false);
+        return array($e['lage'] === 'geleert' ? sprintf(zd_t('HAUS.M_GELEERT'), count(zd_haus_retained()))
+                                              : zd_t('HAUS.M_NICHTS'), 'ok');
+    }
+    zd_haus_frueher_setzen(true);
+    if ($e['lage'] === 'rest') { return array(sprintf(zd_t('HAUS.M_REST'), implode(', ', $e['offen'])), 'warn'); }
+    return array(zd_t('HAUS.M_KEIN_BROKER'), 'warn');
+}
+
+/**
+ * Der Knopf "Diese Installation soll Anbieter sein" (E4 Schritt 3): schreibt EINMAL haus/speicher/anbieter = zendure
+ * (retained) und setzt die Rolle anbieter/gewaehlt; die naechste Minute des Dienstes sendet den vollen Satz. Marstek
+ * Venus E bis 1.1.27 kennt die Regel nicht: dort den Haken "Speicherstand an andere Plugins geben" ausschalten, sonst
+ * senden beide. Rueckgabe array(Meldung, ok|warn).
+ */
+function zd_haus_waehlen($cfg, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    if (empty($cfg['haus_speicher_ein']) || empty($cfg['mqtt_ein'])) {
+        return array(zd_t('HAUS.W_ERST_HAKEN'), 'warn');
+    }
+    $c = zd_haus_quellen();
+    list($z, $hinweis) = hanb_waehlen(ZD_HAUS_NAME, isset($c['speicher']) ? $c['speicher'] : array(), $jetzt);
+    $r = zd_haus_sitzung(array('haus/speicher/anbieter' => array(ZD_HAUS_NAME, true)), array(), array(), 0);
+    if ($r['lage'] !== 'ok' || $r['gesendet'] < 1) {
+        return array(sprintf(zd_t('HAUS.W_BROKER'), $r['lage']), 'warn');
+    }
+    zd_haus_zustand_setzen($z);
+    @unlink(zd_haus_merker_datei());
+    $m = sprintf(zd_t('HAUS.W_OK'), $z['fremd'] !== '' ? $z['fremd'] : '-');
+    if ($hinweis === 'fremd_lebt') { return array($m . ' ' . sprintf(zd_t('HAUS.W_FREMD_LEBT'), $z['fremd']), 'warn'); }
+    if ($hinweis === 'bestand') { return array($m . ' ' . zd_t('HAUS.W_BESTAND'), 'warn'); }
+    return array($m, 'ok');
+}
+
+/** Deinstallation (zendure_dienst.php --haus-leeren): nur, wenn diese Installation abraeumen darf. Ausgabe fuer das
+ *  Installationsprotokoll; Rueckgabe immer 0. Abschrift tb_haus_leeren_ausgabe(). */
+function zd_haus_leeren_ausgabe()
+{
+    $cfg = zd_config(false);
+    $z = zd_haus_zustand();
+    if (!hanb_darf_abraeumen($z, !empty($cfg['_haus_frueher']))) {
+        echo "<INFO> haus/speicher: diese Installation ist nicht Anbieter (oder wurde abgeloest) - nichts zu leeren.\n";
+        return 0;
+    }
+    $e = zd_haus_leeren();
+    if ($e['lage'] === 'geleert') {
+        echo "<OK> haus/speicher: geleert (vom Broker bestaetigt, " . count(zd_haus_retained()) . " Themen).\n";
+    } elseif ($e['lage'] === 'nichts') {
+        echo "<INFO> haus/speicher: nichts zu leeren (der Broker haelt keines der Themen zurueck).\n";
+    } elseif ($e['lage'] === 'rest') {
+        echo "<WARNING> haus/speicher: noch zurueckbehalten - bitte von Hand leeren: " . implode(', ', $e['offen'])
+           . " (mosquitto_pub -r -n -t <thema>)\n";
+    } else {
+        echo "<WARNING> haus/speicher: der Broker war nicht erreichbar (" . $e['grund'] . ") - bitte von Hand leeren: "
+           . implode(', ', zd_haus_retained()) . " (mosquitto_pub -r -n -t <thema>)\n";
+    }
+    return 0;
+}
+
+/** Die Zeile "Anbieter haus/speicher" der Selbstpruefung: array(1|0|-1, Text) in der Form von zd_pruefzeile(). */
+function zd_haus_testzeile($cfg, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    if (empty($cfg['haus_speicher_ein'])) { return array(-1, zd_t('HAUS.T_AUS')); }
+    if (empty($cfg['mqtt_ein'])) { return array(-1, zd_t('HAUS.T_MQTT_AUS')); }
+    $z = zd_haus_zustand();
+    $fremd = $z['fremd'] !== '' ? $z['fremd'] : '-';
+    if ($z['rolle'] !== 'anbieter') {
+        $g = $z['grund'] !== '' ? $z['grund'] : 'pruefe';
+        $st = in_array($g, array('fremd_schweigt', 'veraltet'), true) ? 0 : -1;
+        return array($st, sprintf(zd_t('HAUS.A_' . strtoupper($g)), $fremd));
+    }
+    $sz = zd_json_lesen(zd_haus_sitzung_datei());
+    $vor = sprintf(zd_t('HAUS.A_' . strtoupper($z['grund'] !== '' ? $z['grund'] : 'frei')), $fremd) . ' ';
+    if (!is_array($sz) || !isset($sz['lage'], $sz['zeit']) || $sz['lage'] === 'wartet') {
+        return array(-1, $vor . zd_t('HAUS.T_NIE'));
+    }
+    $alter = max(0, $jetzt - (int) $sz['zeit']);
+    if ((string) $sz['lage'] !== 'ok') { return array(0, $vor . sprintf(zd_t('HAUS.T_BROKER'), (string) $sz['lage'], $alter)); }
+    $soc = isset($sz['soc']) ? (string) $sz['soc'] : '-1';
+    $ok = ($alter <= 150 && hanb_ampel($z) === 1) ? 1 : 0;
+    return array($ok, $vor . ($soc !== '-1' ? sprintf(zd_t('HAUS.T_OK'), $alter, $soc) : sprintf(zd_t('HAUS.T_OHNE'), $alter)));
+}
+
+/* ---------- Leser der Anbieterregel (haus/speicher/anbieter|zaehler) ---------- */
+
+/** Der Stand des Lesers - bei jedem Aufruf frisch aus der Datei. */
+function zd_haus_quellen()
+{
+    $d = zd_json_lesen(zd_haus_quellen_datei());
+    return is_array($d) ? $d : array();
+}
+
+/** Welche Quellen liest der Leser? kurz => array(Zaehlerthema, kurz => Thema). Nur 'speicher' fuer die Anbieterregel
+ *  (haus_speicher_ein und MQTT) - Zendure ist kein Abnehmer (E9). */
+function zd_haus_lesequellen($cfg)
+{
+    $q = array();
+    if (!empty($cfg['haus_speicher_ein']) && !empty($cfg['mqtt_ein'])) {
+        $q['speicher'] = array('haus/speicher/zaehler', array('anbieter' => 'haus/speicher/anbieter'));
+    }
+    return $q;
+}
+
+/**
+ * Eine Lesesitzung (nur aus dem abgekoppelten Leser zendure_dienst.php --haus-lesen): Fenster bis $fenster s auf den
+ * live gesehenen Zaehler (Phasenfalle: der Zaehler kommt einmal je Minute, nicht retained). Ohne Quelle verfaellt die
+ * Ablage. Rueckgabe das Sitzungsergebnis oder null. Abschrift tb_haus_abnehmer().
+ */
+function zd_haus_lesen(array $cfg, $fenster)
+{
+    $datei = zd_haus_quellen_datei();
+    $quellen = zd_haus_lesequellen($cfg);
+    if (!$quellen) {
+        if (is_file($datei)) { @unlink($datei); }
+        return null;
+    }
+    $c = zd_haus_quellen();
+    $lesen = array();
+    $warten = array();
+    foreach ($quellen as $k => $d) {
+        $lesen[] = $d[0];
+        foreach ($d[1] as $t) { $lesen[] = $t; }
+        if (hanb_warten(isset($c[$k]) && is_array($c[$k]) ? $c[$k] : array(), time())) { $warten[] = $d[0]; }
+    }
+    $erg = zd_haus_sitzung(array(), $lesen, $warten, (float) $fenster);
+    $jetzt = time();
+    $neu = array();
+    foreach ($quellen as $k => $d) {
+        $neu[$k] = hanb_merken(isset($c[$k]) && is_array($c[$k]) ? $c[$k] : array(), $erg, $d[0], $d[1], $jetzt,
+                               in_array($d[0], $warten, true));
+    }
+    $neu['sitzung'] = array('zeit' => $jetzt, 'lage' => $erg['lage']);
+    zd_log_gebremst('haus_lesen_' . ($erg['lage'] === 'ok' ? 'ok' : 'fehler'), $erg['lage'] === 'ok'
+        ? 'Haus-Themen lesen: Sitzung am Broker ok' : 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage'] . ')');
+    zd_json_schreiben($datei, $neu);
+    return $erg;
+}
+
+function zd_haus_leser_sperre()
+{
+    return sys_get_temp_dir() . '/zd_haus_lesen_' . zd_paths()['plugin'] . '.lock';
+}
+
+/**
+ * Den abgekoppelten Leser starten (Abschrift tb_haus_abnehmer_starten()): hoechstens EINEN, nie darauf warten - der
+ * Dienst darf nicht 65 s stehen (Horcher, Warteschlange). Das Kind erbt keine Deskriptoren: die Schale schliesst vor
+ * dem exec jede Nummer ueber 2 (Sperre dienst.lock und Horcher-Rohre des Dienstes; Gedaechtnis
+ * sperre-vererbt-sich-an-kinder). Rueckgabe aus|laeuft|gestartet|kein_start.
+ */
+function zd_haus_leser_starten(array $cfg, $skript)
+{
+    if (!zd_haus_lesequellen($cfg)) {
+        $datei = zd_haus_quellen_datei();
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $fh = @fopen(zd_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der abgekoppelte Leser selbst: eigene Sperre (close-on-exec), sonst still beenden. */
+function zd_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(zd_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = zd_haus_lesen(zd_config(false), $fenster);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg === null ? 'aus' : $erg['lage'];
+}
+
+/**
+ * Der Minutentakt der Haus-Themen im Dienst (zd_abbild_schreiben() ruft ihn je Durchgang; er handelt hoechstens einmal
+ * je 60 s): erst den Leser anstossen (abgekoppelt), dann der Anbieter-Lauf mit dem Abbild DIESES Durchgangs und dem
+ * Herzschlag als Zaehler. $skript = Pfad von zendure_dienst.php. Rueckgabe true, wenn gehandelt wurde.
+ */
+function zd_haus_takt(array $werte, array $geraete, array $cfg, $zaehler, $skript, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $letzt = isset($GLOBALS['zd_haus_ts']) ? (int) $GLOBALS['zd_haus_ts'] : 0;
+    if ($letzt > 0 && $jetzt >= $letzt && $jetzt - $letzt < 60) { return false; }
+    $GLOBALS['zd_haus_ts'] = $jetzt;
+    zd_haus_leser_starten($cfg, $skript);
+    zd_haus_lauf($cfg, $werte, $geraete, $zaehler, $jetzt);
+    return true;
+}
+
+/* ---------- G3/Sicherung: neue Schluessel dieser Fassung ---------- */
+
+/** Schluessel, die 0.9.38 neu einfuehrt. Eine Sicherung ohne sie wird angenommen; es gilt weiter, was eingestellt ist
+ *  (Hinweis EINST.SICH_OHNE_G43). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh); befehle_mqtt_ein ab Werk
+ *  und beim Update 0; haus_speicher_ein ab Werk 0. */
+function zd_neue_schluessel_0938()
+{
+    return array('haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
+}
+
+/* ---------- Gesundheit (Healthcheck nach Renault NG 2.1.20) ---------- */
+
+/** Die Fakten des Healthchecks - nur lesend, kein Netz, kein Broker. Grundlage bleibt zd_befund() (Oberflaeche und
+ *  Meldung sagen dasselbe). */
+function zd_gesund_fakten()
+{
+    $cfg = zd_config(false);
+    $p = zd_paths();
+    $f = array();
+    $f['befund'] = zd_befund();
+    $f['geraete'] = count(zd_geraete());
+    $f['rechte'] = is_file($p['config']) ? substr(sprintf('%o', fileperms($p['config'])), -4) : '';
+    $f['v2'] = $f['geraete'] > 0 ? zd_v2_haken_lage($cfg) : null;
+    $f['haus'] = (!empty($cfg['haus_speicher_ein']) && !empty($cfg['mqtt_ein'])) ? zd_haus_testzeile($cfg) : null;
+    $f['bruecke'] = (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_ein'])) ? zd_bruecke_zustand() : null;
+    return $f;
+}
+
+/**
+ * Das Urteil (rein): array(Status, Text) - 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis (Regeln/03 :73-78). Ohne
+ * Geraet 6 "nicht eingerichtet" (Text aus zd_befund()); sonst zd_befund() als Grundlage, dazu Warnungen (4): die
+ * Konfiguration traegt nicht 0600, Gateway V2 mit fehlenden Haken, Anbieter haus/speicher gescheitert (Testzeile 0),
+ * Befehlsbruecke soll laufen und steht.
+ */
+function zd_gesund_urteil(array $f)
+{
+    $b = $f['befund'];
+    if ((int) $f['geraete'] === 0) {
+        return array(6, (string) $b['text']);
+    }
+    $status = (int) $b['status'];
+    $befunde = array((string) $b['text']);
+    $setze = function ($s, $t) use (&$status, &$befunde) {
+        if ($s === 3 || ($s === 4 && ($status === 5 || $status === 6))) { $status = $s; }
+        $befunde[] = $t;
+    };
+    if ($f['rechte'] !== '' && $f['rechte'] !== '0600') {
+        $setze(4, 'Die Konfiguration traegt die Rechte ' . $f['rechte'] . ' statt 0600');
+    }
+    if (is_array($f['v2']) && $f['v2'][0] === 0) {
+        $setze(4, 'Gateway V2: ' . $f['v2'][1]);
+    }
+    if (is_array($f['haus']) && $f['haus'][0] === 0) {
+        $setze(4, 'Anbieter haus/speicher: ' . $f['haus'][1]);
+    }
+    if (is_array($f['bruecke']) && $f['bruecke'][0] === false) {
+        $setze(4, 'Befehlsbruecke: ' . $f['bruecke'][1]);
+    }
+    return array($status, implode(' - ', $befunde));
 }

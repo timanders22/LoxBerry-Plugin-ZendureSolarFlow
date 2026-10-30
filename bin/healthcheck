@@ -78,12 +78,15 @@ if ($zd_was === 'title') {
     exit(0);
 }
 
-$zd_b = zd_befund();
+/* Gruppe 43 (0.9.38): Form Renault NG - Fakten (lesend, kein Netz) und Urteil getrennt (zd_gesund_fakten(),
+ * zd_gesund_urteil() in zd_lib.php). Grundlage bleibt zd_befund(); ohne Geraet 6 "nicht eingerichtet"; dazu
+ * Warnungen fuer Rechte, Gateway V2, Anbieter haus/speicher und Befehlsbruecke. */
+$zd_b = zd_gesund_urteil(zd_gesund_fakten());
 $zd_p = zd_paths();
 echo json_encode(array(
     'desc'    => 'Zendure SolarFlow',
-    'status'  => (int) $zd_b['status'],
-    'result'  => (string) $zd_b['text'],
+    'status'  => (int) $zd_b[0],
+    'result'  => (string) $zd_b[1],
     'logfile' => $zd_p['log'],
 ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 exit(0);

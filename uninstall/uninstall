@@ -176,6 +176,65 @@ else
     echo "<INFO> PHP oder zendure_dienst.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
 
+# ---- 1c. Gruppe 43 (0.9.38): haus/speicher abraeumen - nur, wenn diese Installation Anbieter ist oder war ----
+# (zendure_dienst.php --haus-leeren, hanb_darf_abraeumen(): nie als Wartende oder Abgeloeste - die Themen gehoeren
+# dann einem anderen Speicher-Plugin). Kurze Sitzung am Broker mit Ruecklesen; als loxberry, stdin geschlossen.
+if command -v php >/dev/null 2>&1 && [ -f "$ZD_DIENST_PHP" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout 60 php "$ZD_DIENST_PHP" --haus-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout 60 php "$ZD_DIENST_PHP" --haus-leeren \
+            < /dev/null 2>&1 || true
+    fi
+fi
+
+# ---- 1d. Gruppe 43 (0.9.38): die Befehlsbruecke anhalten und ihre Zugangsdaten entfernen ----
+# Bauform Marstek Venus E 1.1.25 (Entwurf gemeinsam 2.9): stop beendet Dienst UND mosquitto_sub, danach
+# argumentweise nachzaehlen, die Optionsdateien (Broker-Kennwort) ueberschreiben. Den Ordner befehle/ teilt sich die
+# Bruecke mit der Warteschlange - entfernt werden deshalb nur ihre eigenen Dateien; data/plugins/<ordner> raeumt
+# LoxBerry selbst weg. Im Broker bleibt nichts: die Quittungen sind nicht retained.
+BBSH="$BASE/bin/plugins/$PDIR/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PDIR/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PDIR/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop
+fi
+BBREST=0
+for D in /proc/[0-9]*; do
+    mapfile -d '' -t BBA 2>/dev/null < "$D/cmdline" || continue
+    if [ "${#BBA[@]}" -eq 2 ] && [ "${BBA[1]}" = "$BBPHP" ] && [[ "${BBA[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${D#/proc/}" 2>/dev/null
+        BBREST=$((BBREST + 1))
+    fi
+done
+BBABOS=0
+for D in /proc/[0-9]*; do
+    read -r BBC 2>/dev/null < "$D/comm" || continue
+    [ "$BBC" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t BBE 2>/dev/null < "$D/environ" || continue
+    for BBX in "${BBE[@]}"; do
+        if [ "$BBX" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${D#/proc/}" 2>/dev/null; BBABOS=$((BBABOS + 1)); fi
+    done
+done
+[ "$BBREST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BBREST Dienst(e) erst mit kill -9 beendet."
+[ "$BBABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BBABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR/mosquitto" ]; then
+    for BBF in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$BBF" ]; then
+            BBN=$(stat -c %s "$BBF" 2>/dev/null || echo 64)
+            head -c "$BBN" /dev/zero > "$BBF" 2>/dev/null
+        fi
+    done
+    rm -rf "$BBDIR/mosquitto"
+fi
+rm -f "$BBDIR/zustand.json" "$BBDIR/waechter.json" 2>/dev/null
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+else
+    echo "<OK> Befehlsbruecke angehalten, Zugangsdaten der Befehlsbruecke entfernt."
+fi
+
 # ---- 2. Sicherungen mit dem Aktionstoken ----
 #
 # ES SIND ZWEI, NICHT EINE. preupgrade.sh legt seit 0.9.4 zusaetzlich eine
@@ -228,6 +287,14 @@ for ZD_ALT in "$PBESTAND.alt"*; do
 done
 # Der Einbaumerker aus postinstall.sh.
 rm -f "$BASE/data/plugins/$PDIR.postinstall_lauf" 2>/dev/null
+
+# ---- 3b. Gruppe 43 (0.9.38): eine liegengebliebene Update-Sicherung (Rueckholen misslungen) ----
+ZD_SICHER="$BASE/data/plugins/$PDIR.upgrade_sicherung"
+if [ -d "$ZD_SICHER" ] && [ ! -L "$ZD_SICHER" ]; then
+    case "$ZD_SICHER" in
+        */data/plugins/?*.upgrade_sicherung) rm -rf "${ZD_SICHER:?}" && echo "<OK> Update-Sicherung entfernt: $PDIR.upgrade_sicherung" ;;
+    esac
+fi
 
 # ---- 4. Die Upgrade-Marke ----
 #

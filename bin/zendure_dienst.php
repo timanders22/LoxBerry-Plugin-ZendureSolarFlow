@@ -27,6 +27,8 @@
  *   zendure_dienst.php               Dienst (Dauerbetrieb)
  *   zendure_dienst.php --einmal      ein Durchgang, dann Ende
  *   zendure_dienst.php --selbsttest  Pruefungen ohne Geraet, Klartextausgabe
+ *   zendure_dienst.php --haus-lesen  Leser der Anbieterregel haus/speicher (abgekoppelt, bis 65 s; seit 0.9.38)
+ *   zendure_dienst.php --haus-leeren haus/speicher abraeumen, nur als Anbieter (Deinstallation; seit 0.9.38)
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -1742,6 +1744,9 @@ function zd_alte_befehle_verwerfen()
     $jetzt = time();
     clearstatcache();
     foreach (glob($ordner . '/*.json') ?: array() as $datei) {
+        if (!zd_auftrag_datei($datei)) {
+            continue;   // Gruppe 43: Dateien der Befehlsbruecke (zustand.json, waechter.json) sind keine Auftraege
+        }
         $b = zd_json_lesen($datei);
         $ts = (is_array($b) && isset($b['ts']) && preg_match('/^[0-9]{1,12}$/', (string) $b['ts']))
             ? (int) $b['ts'] : (int) @filemtime($datei);
@@ -1767,6 +1772,9 @@ function zd_warteschlange(array $geraete, array $cfg)
     }
     $sofort = false;
     foreach (glob($ordner . '/*.json') ?: array() as $datei) {
+        if (!zd_auftrag_datei($datei)) {
+            continue;   // Gruppe 43: Dateien der Befehlsbruecke (zustand.json, waechter.json) sind keine Auftraege
+        }
         $kennung = basename($datei, '.json');
         $b = zd_json_lesen($datei);
         @unlink($datei);
@@ -2080,6 +2088,10 @@ function zd_abbild_schreiben(array $geraete, array $cfg)
         // Was nicht mehr entsteht, abraeumen und nachlesen (M4).
         zd_mqtt_verwaiste_raeumen(zd_mqtt_soll_retained($werte, $praefix));
     }
+    /* Gruppe 43 (0.9.38, E7): Anbieter haus/speicher mit Anbieterregel - je MINUTE, nicht je Durchgang; der Leser
+     * laeuft abgekoppelt (der Dienst steht nie 65 s). Auch mit Haken oder MQTT aus: dann raeumt er hoechstens alle
+     * 10 Minuten ab, wenn diese Installation Anbieter war. */
+    zd_haus_takt($werte, $geraete, $cfg, $zd_zaehler, __FILE__);
     return $werte;
 }
 
@@ -2393,7 +2405,7 @@ foreach ($zd_argv as $zd_i => $zd_a) {
     if ($zd_i === 0 || strncmp((string) $zd_a, '--', 2) !== 0) {
         continue;
     }
-    if (!in_array($zd_a, array('--selbsttest', '--einmal', '--mqtt-leeren'), true)) {
+    if (!in_array($zd_a, array('--selbsttest', '--einmal', '--mqtt-leeren', '--haus-lesen', '--haus-leeren'), true)) {
         fwrite(STDERR, sprintf(zd_t('DIENST.M_SCHALTER_UNBEKANNT'), $zd_a) . "\n");
         exit(2);
     }
@@ -2405,6 +2417,15 @@ if (in_array('--selbsttest', $zd_argv, true)) {
  * Schreibt kein Protokoll und legt nichts an (zd_mqtt_leeren()). */
 if (in_array('--mqtt-leeren', $zd_argv, true)) {
     exit(zd_mqtt_leeren());
+}
+/* Gruppe 43 (0.9.38): der abgekoppelte Leser der Anbieterregel (zd_haus_leser_starten() aus dem Haus-Takt; eigene
+ * Sperre, nimmt NICHT die Sperre des Dienstes) und das Abraeumen bei der Deinstallation (uninstall/uninstall). */
+if (in_array('--haus-lesen', $zd_argv, true)) {
+    zd_haus_leser_lauf(65);
+    exit(0);
+}
+if (in_array('--haus-leeren', $zd_argv, true)) {
+    exit(zd_haus_leeren_ausgabe());
 }
 /* PHP-Fehler des laufenden Dienstes gehoeren ins Protokoll (B48, 17.09.2026).
  *

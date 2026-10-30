@@ -7,3 +7,6 @@
 # Aufruf lautlos fehl - die Ausgabe geht nach /dev/null, und niemand
 # bemerkte, dass der Waechter nicht mehr laeuft.
 /bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+# Gruppe 43 (0.9.38): Waechter der Befehlsbruecke (befehlsbruecke.sh waechter: startet nur mit "Befehle ueber MQTT
+# annehmen", hoechstens alle 600 s neu, nie waehrend der Upgrade-Marke; sendet <praefix>/status/befehle).
+/bin/bash "REPLACELBPBINDIR/befehlsbruecke.sh" waechter >/dev/null 2>&1

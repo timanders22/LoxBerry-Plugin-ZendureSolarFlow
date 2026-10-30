@@ -68,6 +68,10 @@ SKRIPT="$BASE/bin/plugins/$PFOLDER/zendure_dienst.php"
 # zehn Sekunden je Prozess, und in dieser Zeit kann der Minutentakt laufen.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 mkdir -p "$BASE/data/plugins" 2>/dev/null
+# Gruppe 43 (0.9.38): lag die Marke schon vor diesem Lauf, ist ein Versuch DIESES Updates abgebrochen - dann bleibt
+# eine vorhandene Update-Sicherung stehen (sie ist womoeglich der einzige Stand), siehe Update-Rettung unten.
+ZD_MARKE_VORHER=0
+[ -f "$MARKE" ] && ZD_MARKE_VORHER=1
 if date +%s > "$MARKE" 2>/dev/null; then
     echo "<INFO> Upgrade-Marke gesetzt: $MARKE"
 else
@@ -258,6 +262,59 @@ elif [ -f "$CF" ]; then
         echo "<WARNING> Zweitschrift, aus der sie zurueckgespielt werden koennte."
     fi
 fi
+# ---------- Gruppe 43 (0.9.38): die Befehlsbruecke anhalten ----------
+# Bauform Marstek Venus E 1.1.25: vor dem Austausch von bin/ und data/; nach der Marke startet der Minutentakt sie in
+# der Luecke nicht neu. postinstall.sh startet sie danach, wenn der Haken an ist.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if timeout 40 bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<OK> Befehlsbruecke fuer das Update angehalten."
+    else
+        echo "<WARNING> Die Befehlsbruecke liess sich nicht anhalten - der Installer tauscht sie trotzdem aus."
+    fi
+fi
+
+# ---------- Gruppe 43 (0.9.38): Update-Rettung aller Laufzeitdateien ----------
+# plugininstall.pl ruft beim Upgrade purge_installation und entfernt data/plugins/<ordner>/ vollstaendig. Verlauf,
+# Energiezaehler und Sollmerker liegen seit 0.9.9 im Bestandsordner daneben; bis 0.9.37 gingen dagegen Sollmerker
+# (soll.json), Ergebnis des Satz-Assistenten, Lebenszeichen-Zaehler (.takt), Merker der Schreiber-Wache, Meldebremsen
+# und - neu - der Zustand der Anbieterregel bei jedem Update verloren. Sie gehen NEBEN den Ordner
+# ($PFOLDER.upgrade_sicherung); postinstall.sh holt sie bei vorhandener Marke zurueck (was neu schon da ist, gilt).
+# EINE Liste mit postinstall.sh: ZD_RETTEN. Eine Sicherung aus einem FRUEHEREN Vorgang wird zuerst weggeraeumt -
+# ausser die Marke lag schon (abgebrochener Versuch dieses Updates).
+ZD_RETTEN="soll.json satztest.json suche.json .takt .befund haus_anbieter.json haus_quellen.json haus_sitzung.json .mqtt_dienstaussage_geraeumt .meld_* .wache_* schreiber_geraet*.json"
+ZD_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+ZD_DATEN="$BASE/data/plugins/$PFOLDER"
+if [ "$ZD_MARKE_VORHER" = "0" ] && { [ -e "$ZD_SICHER" ] || [ -L "$ZD_SICHER" ]; }; then
+    case "$ZD_SICHER" in
+        */data/plugins/?*.upgrade_sicherung) rm -rf "${ZD_SICHER:?}" 2>/dev/null ;;
+    esac
+    if [ -e "$ZD_SICHER" ] || [ -L "$ZD_SICHER" ]; then
+        echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $ZD_SICHER"
+        echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        exit 2
+    fi
+    echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $ZD_SICHER"
+fi
+if [ -d "$ZD_DATEN" ]; then
+    mkdir -p "$ZD_SICHER" 2>/dev/null && chmod 700 "$ZD_SICHER" 2>/dev/null
+    ZD_OK=1
+    ZD_NAMEN=""
+    for ZD_M in $ZD_RETTEN; do
+        for ZD_Q in "$ZD_DATEN"/$ZD_M; do
+            [ -f "$ZD_Q" ] && [ ! -L "$ZD_Q" ] || continue
+            cp -p "$ZD_Q" "$ZD_SICHER/" 2>/dev/null
+            cmp -s "$ZD_Q" "$ZD_SICHER/$(basename "$ZD_Q")" || ZD_OK=0
+            ZD_NAMEN="$ZD_NAMEN $(basename "$ZD_Q")"
+        done
+    done
+    if [ "$ZD_OK" = "1" ]; then
+        [ -n "$ZD_NAMEN" ] && echo "<INFO> Fuer das Update gesichert:$ZD_NAMEN."
+    else
+        echo "<WARNING> Nicht alle Laufzeitdateien liessen sich sichern ($ZD_SICHER) - Merker gehen beim Update verloren."
+    fi
+fi
+
 echo "<OK> preupgrade abgeschlossen."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
