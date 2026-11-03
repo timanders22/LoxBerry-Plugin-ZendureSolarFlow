@@ -86,7 +86,8 @@ return array(
                      'mqtt_ein'    => !empty($c['mqtt_ein']));
     },
     'protokoll' => function ($stufe, $text) {
-        zd_log('Befehlsbruecke: ' . ($stufe === 'INFO' ? '' : $stufe . ' ') . $text);
+        // 0.9.40: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 0.9.39 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        zd_log(($stufe === 'INFO' ? '' : $stufe . ' ') . $text);
     },
     'teile' => array('nr' => '[2-9]'),
     'befehle' => $zd_bb,

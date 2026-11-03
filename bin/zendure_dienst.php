@@ -326,6 +326,17 @@ function zd_mosq_vorhanden()
     return (count($a) > 0 && count($b) > 0) ? 1 : 0;
 }
 
+/**
+ * Ein Argument fuer die Schale anfuehren, Byte fuer Byte: fuer Themen, Werte und Texte, nicht fuer Pfade.
+ * Bis 0.9.39 stand hier escapeshellarg(). Es verwirft unter PHP 7.4 jedes Byte, das im LC_CTYPE kein gueltiges Zeichen ist; Apache startet mit LANG=C, eine
+ * Befehlsbruecke ohne LANG: aus "Kueche" mit Umlaut wurde "Kche", ohne Fehler (am Geraet gemessen 01.11.2026). setlocale() fehlt, wo keine UTF-8-Locale
+ * erzeugt ist, und aendert basename() und PCRE. Einfache Anfuehrungszeichen sind fuer sh und dash byte-erhaltend; ein Nullbyte kann kein Argument tragen.
+ */
+function zd_shell_arg($s)
+{
+    return "'" . str_replace("'", "'\\''", str_replace("\0", '', (string) $s)) . "'";
+}
+
 /** Startet mosquitto_sub fuer alle MQTT-Geraete. Rueckgabe: true bei Erfolg. */
 function zd_horcher_starten(array $geraete)
 {
@@ -353,8 +364,8 @@ function zd_horcher_starten(array $geraete)
     // (belegt in Zendure/Zendure-HA, api.py: mqttConnect).
     $args = array();
     foreach ($mqtt as $g) {
-        $args[] = '-t ' . escapeshellarg('/' . $g['prodkey'] . '/' . $g['deviceid'] . '/#');
-        $args[] = '-t ' . escapeshellarg('iot/' . $g['prodkey'] . '/' . $g['deviceid'] . '/#');
+        $args[] = '-t ' . zd_shell_arg('/' . $g['prodkey'] . '/' . $g['deviceid'] . '/#');
+        $args[] = '-t ' . zd_shell_arg('iot/' . $g['prodkey'] . '/' . $g['deviceid'] . '/#');
     }
     // -F '%t\t%p': Thema, Tabulator, Nutzdaten. Die Nutzdaten sind JSON und
     // damit einzeilig; der Tabulator kann in Zendure-Themen nicht vorkommen.
@@ -609,8 +620,8 @@ function zd_mqtt_an_geraet(array $g, $themenrest, array $inhalt)
     $thema = 'iot/' . $g['prodkey'] . '/' . $g['deviceid'] . '/' . $themenrest;
     $heim = zd_mosq_heim();
     $befehl = 'HOME=' . escapeshellarg($heim) . ' XDG_CONFIG_HOME=' . escapeshellarg($heim . '/.config')
-            . ' mosquitto_pub -t ' . escapeshellarg($thema)
-            . ' -m ' . escapeshellarg(json_encode($inhalt)) . ' 2>&1';
+            . ' mosquitto_pub -t ' . zd_shell_arg($thema)
+            . ' -m ' . zd_shell_arg(json_encode($inhalt)) . ' 2>&1';
     $ausgabe = array();
     $code = 0;
     @exec($befehl, $ausgabe, $code);

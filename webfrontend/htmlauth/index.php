@@ -848,6 +848,19 @@ if ($zd_post && isset($_POST['haus_waehlen'])) {
 }
 
 /* ---------------- Dienst ---------------- */
+/* 0.9.40: Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($zd_post && isset($_POST['ansage_test'])) {
+    list($zd_at, $zd_ag) = zd_ansage_test();
+    if ($zd_at) { $zd_meldungen[] = zd_e(zd_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $zd_fehler[] = zd_e(zd_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $zd_ag); }
+    $zd_tab = 'tab-settings';
+}
+if ($zd_post && isset($_POST['ansage_speichern'])) {
+    list($zd_ao, $zd_af, $zd_ah) = zd_ansage_post($_POST);
+    if ($zd_af) { foreach ($zd_af as $zd_ax) { $zd_fehler[] = zd_e($zd_ax); } }
+    elseif ($zd_ao) { $zd_meldungen[] = zd_e(trim(zd_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $zd_ah))); }
+    else { $zd_fehler[] = zd_e(zd_t('ANSAGEPLUGIN.M_FEHL')); }
+    $zd_tab = 'tab-settings';
+}
 if ($zd_post && isset($_POST['dienst'])) {
     $zd_befehl = (string) $_POST['dienst'];
     list($zd_ok, $zd_ausgabe) = zd_dienst($zd_befehl);
@@ -1541,6 +1554,7 @@ foreach (array(
          gar nicht funktionieren - dem aeusseren Formular fehlt
          enctype="multipart/form-data", die Datei kam also nie an. Gemessen
          mit Werkzeuge/formularpruefung.py am gerenderten HTML. */ ?>
+<?= zd_ansage_form_html('<input data-role="none" type="hidden" name="fmt" value="' . zd_e($zd_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= zd_e(zd_t('EINST.H_KONFIG')) ?></h2>
 <div class="sm-hinweis"><?= zd_t('EINST.KONFIG_ERKLAERUNG') ?></div>
 <div class="sm-legende">
