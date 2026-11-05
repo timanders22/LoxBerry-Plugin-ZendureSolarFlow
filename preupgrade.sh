@@ -4,6 +4,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-zendure}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
 # statt vollziehen; dieselbe Regel wie bin/dienst.sh):
 #   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel
@@ -44,7 +48,7 @@ fi
 if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - keine Upgrade-Marke,"
     echo "<WARNING> kein Dienst angehalten, keine Zweitschrift angelegt."
-    exit 1
+    exit 2
 fi
 
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
@@ -78,10 +82,35 @@ else
     # Ohne Marke wird die Luecke nicht gedeckt - das gehoert gesagt, nicht
     # verschwiegen. Abgebrochen wird deswegen nicht: der Zustand ohne Marke ist
     # genau der von 0.9.22, und der hat in der Messung nichts verloren.
-    rm -f "$MARKE" 2>/dev/null
-    echo "<WARNING> Die Upgrade-Marke liess sich nicht anlegen ($MARKE)."
-    echo "<WARNING> Der Minutentakt kann den Dienst waehrend der Aktualisierung starten."
+    [ "$ZD_MARKE_VORHER" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    [ "$ZD_MARKE_VORHER" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 
 # Der Dienst wird NICHT ueber dienst.sh angehalten: "dienst.sh stop" entfernt
 # den Sollmerker, und dann startet der minuetliche Waechter den Dienst nach
@@ -235,8 +264,10 @@ zd_traegt_token() {
 if [ -f "$CF" ] && zd_traegt_token "$CF"; then
     # chmod nach cp -p (Befund I4, 29.09.2026): cp -p bringt die Rechte der
     # Quelle mit, bis 0.9.27 stand die Zweitschrift dann auf 644.
-    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
-        && chmod 0600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
+    if ! zs_hinlegen "$CF" "$BASE/config/plugins/$PFOLDER.backup.json"; then
+        echo "<WARNING> Die Konfiguration liess sich nicht sichern."
+        ZS_FEHL="$ZS_FEHL zendure.json"
+    fi
 elif [ -f "$CF" ]; then
     # Eine Datei ohne Token, die aber etwas traegt (abgeschnitten), wird
     # nicht verloren (Befund I6, 29.09.2026): bis 0.9.27 war sie nach dem
@@ -292,6 +323,7 @@ if [ "$ZD_MARKE_VORHER" = "0" ] && { [ -e "$ZD_SICHER" ] || [ -L "$ZD_SICHER" ];
     if [ -e "$ZD_SICHER" ] || [ -L "$ZD_SICHER" ]; then
         echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $ZD_SICHER"
         echo "<FAIL> postinstall.sh spielte sie sonst zurueck. Dieses Skript endet mit Rueckgabewert 2."
+        rm -f "$MARKE" 2>/dev/null
         exit 2
     fi
     echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt: $ZD_SICHER"
@@ -312,6 +344,7 @@ if [ -d "$ZD_DATEN" ]; then
         [ -n "$ZD_NAMEN" ] && echo "<INFO> Fuer das Update gesichert:$ZD_NAMEN."
     else
         echo "<WARNING> Nicht alle Laufzeitdateien liessen sich sichern ($ZD_SICHER) - Merker gehen beim Update verloren."
+        ZS_FEHL="$ZS_FEHL Laufzeitdateien"
     fi
 fi
 
@@ -334,11 +367,15 @@ NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # "[ -s ]" heisst nur "nicht leer" und ist zu schwach (Regeln/05): eine
 # abgeschnittene Datei ist nicht leer. Derselbe Inhaltsentscheid wie oben.
 if [ -f "$NETZ_CFG/zendure.json" ] && zd_traegt_token "$NETZ_CFG/zendure.json"; then
-    cp -p "$NETZ_CFG/zendure.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.zendure.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.zendure.json" 2>/dev/null
-    echo "<INFO> Zweitschrift der Einstellungen angelegt."
+    if zs_hinlegen "$NETZ_CFG/zendure.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.zendure.json"; then
+        echo "<INFO> Zweitschrift der Einstellungen angelegt."
+    else
+        echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen."
+        ZS_FEHL="$ZS_FEHL zendure.json"
+    fi
 else
     echo "<INFO> Keine Konfiguration mit Aktionstoken - die Zweitschrift bleibt, wie sie ist."
 fi
 
+zs_schluss
 exit 0
