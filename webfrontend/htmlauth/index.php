@@ -191,6 +191,7 @@ if ($zd_post && isset($_POST['vorlage'])) {
         list($zd_name, $zd_inhalt) = zd_vorlage($zd_vnr);
     }
     if ($zd_name !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: ' . $zd_typ . '; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $zd_name . '"');
         echo $zd_inhalt;
@@ -210,6 +211,7 @@ if ($zd_post && isset($_POST['verlauf_csv'])) {
     $zd_vtag = isset($_POST['verlauf_tag'])
                && preg_match('/^[0-9]{8}$/', (string) $_POST['verlauf_tag'])
                ? (string) $_POST['verlauf_tag'] : date('Ymd');
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="zendure_geraet'
            . $zd_vnr . '_' . $zd_vtag . '.csv"');
@@ -223,6 +225,7 @@ if ($zd_post && isset($_POST['konfig_aus'])) {
     if ($zd_js === '') {
         $zd_fehler[] = zd_t('EINST.KONFIG_KEIN_JSON');
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="zendure_konfiguration_'
                . date('Ymd_His') . '.json"');
