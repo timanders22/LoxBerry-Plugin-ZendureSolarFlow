@@ -564,6 +564,8 @@ if ($zd_post && isset($_POST['speichern'])) {
     }
 
     $zd_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
+    // 0.9.47 (Issue 1): Grenzwerte ohne Flash schreiben (smartMode), ab Werk aus.
+    $zd_cfg['grenzen_smartmode_ein'] = isset($_POST['grenzen_smartmode_ein']) ? 1 : 0;
     $zd_cfg['schutz_ein']    = isset($_POST['schutz_ein']) ? 1 : 0;
     $zd_cfg['energie_ein']   = isset($_POST['energie_ein']) ? 1 : 0;
 
@@ -1428,6 +1430,13 @@ foreach (array(
   <div class="sm-hilfe"><?= zd_t('EINST.H_SCHREIBBREMSE') ?></div>
 </div>
 <div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="grenzen_smartmode_ein" value="1"<?= zd_markierung('grenzen_smartmode_ein') ?> <?= !empty($zd_cfg['grenzen_smartmode_ein']) ? 'checked' : '' ?>>
+    <?= zd_e(zd_t('EINST.L_GRENZEN_SMARTMODE')) ?>
+  </label>
+  <div class="sm-hilfe"><?= zd_t('EINST.H_GRENZEN_SMARTMODE') ?></div>
+</div>
+<div class="sm-feld">
   <label for="schrittweite"><?= zd_e(zd_t('EINST.L_SCHRITTWEITE')) ?></label>
   <input data-role="none" type="number" id="schrittweite" name="schrittweite"<?= zd_markierung('schrittweite') ?> value="<?= zd_e((string) $zd_cfg['schrittweite']) ?>" min="1" max="500">
   <div class="sm-hilfe"><?= zd_t('EINST.H_SCHRITTWEITE') ?></div>
@@ -1876,7 +1885,7 @@ if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.A
 <tr><th><?= zd_e(zd_t('ALLG.EIGENSCHAFT')) ?></th><th><?= zd_e(zd_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= zd_e(zd_t('LOX.T_VA_ADRESSE')) ?></td><td><span class="sm-mono">http://<?= zd_e($zd_host) ?></span></td></tr>
 <?php
-/* Acht Befehle, eine Schleife, EINE Adressquelle.
+/* Acht Befehle (seit 0.9.47 neun, mit leistung), eine Schleife, EINE Adressquelle.
  *
  * Bis 0.9.12 stand jede dieser Adressen von Hand in der Tabelle - sieben
  * Kopien derselben Zeichenkette, dazu zwei weitere in den Vorlagen. Solange
@@ -1891,6 +1900,7 @@ if ($zd_gw['gefunden']) { ?> <span class="sm-mono"><?= zd_e(sprintf(zd_t('MQTT.A
 foreach (array(
     array('LOX.T_VA_ENTLADEN',  'entladen',  array('geraet' => 1, 'watt' => '<v>')),
     array('LOX.T_VA_LADEN',     'laden',     array('geraet' => 1, 'watt' => '<v>')),
+    array('LOX.T_VA_LEISTUNG',  'leistung',  array('geraet' => 1, 'watt' => '<v>')),
     array('LOX.T_VA_AUS',       'aus',       array('geraet' => 1)),
     array('LOX.T_VA_SOCMIN',    'socmin',    array('geraet' => 1, 'prozent' => '<v>')),
     array('LOX.T_VA_SOCMAX',    'socmax',    array('geraet' => 1, 'prozent' => '<v>')),
@@ -1905,6 +1915,15 @@ foreach (array(
     <td><span class="sm-mono"><?= zd_e(zd_endpunkt_pfad(array('selftest' => 1))) ?></span></td></tr>
 </table>
 <div class="sm-hinweis"><?= zd_t('LOX.S4_VORLAGE') ?></div>
+<?php
+/* 0.9.47 (Issue 1): leistung erklaert, mit drei fertigen Adressen aus zd_endpunkt_pfad() - derselben Quelle wie die
+ * Tabelle oben und die Vorlage. Das Vorzeichen steht in zd_leistung_umsetzen() (zd_lib.php). */
+$zd_lb = function ($w) use ($zd_host) {
+    return zd_e('http://' . $zd_host
+        . zd_endpunkt_pfad(array('aktion' => 'leistung', 'geraet' => 1, 'watt' => $w, 'von' => 'loxone'), true));
+};
+?>
+<div class="sm-hinweis"><?= sprintf(zd_t('LOX.S4_LEISTUNG'), $zd_lb('-600'), $zd_lb('800'), $zd_lb('0')) ?></div>
 <div class="sm-hinweis"><?= zd_t('LOX.VON_HINWEIS') ?></div>
 <div class="sm-warnung"><?= zd_t('LOX.S4_WARNUNG') ?></div>
 </div>

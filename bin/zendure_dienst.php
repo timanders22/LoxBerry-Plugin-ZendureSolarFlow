@@ -1040,9 +1040,22 @@ function zd_bau_text(array $bau)
  *
  * $wert ist Watt (laden, entladen, grenzeaus, grenzeein) beziehungsweise
  * Prozent (socmin, socmax); bei 'aus' wird er nicht benutzt.
+ *
+ * $cfg (0.9.47, Issue 1) wirkt nur auf grenzeaus und grenzeein beim Befehlssatz
+ * zensdk: mit grenzen_smartmode_ein = 1 geht smartMode mit, nach derselben Regel
+ * wie bei laden und entladen (1 bei einem Wert ungleich 0, 0 bei 0). Ohne $cfg
+ * oder mit dem Haken aus (ab Werk) ist die Nutzlast dieselbe wie bis 0.9.46.
  */
-function zd_befehl_bauen(array $g, $aktion, $wert = 0)
+function zd_befehl_bauen(array $g, $aktion, $wert = 0, array $cfg = array())
 {
+    if (($aktion === 'grenzeaus' || $aktion === 'grenzeein') && $g['satz'] === 'zensdk'
+        && !empty($cfg['grenzen_smartmode_ein'])) {
+        $feld = $aktion === 'grenzeaus' ? 'outputLimit' : 'inputLimit';
+        return zd_bau_eigenschaften($g, array(
+            'smartMode' => (int) $wert == 0 ? 0 : 1,
+            $feld       => (int) $wert,
+        ));
+    }
     switch ($aktion) {
         case 'laden':     return zd_bau_laden($g, (int) $wert);
         case 'entladen':  return zd_bau_entladen($g, (int) $wert);
@@ -1703,7 +1716,7 @@ function zd_befehl_ausfuehren(array $befehl, array $geraete, array $cfg)
                 $zusatz = ' ' . sprintf(zd_t('DIENST.M_GERASTERT'), $sollwert,
                                         (int) $cfg['schrittweite']);
             }
-            $bau = zd_befehl_bauen($g, $aktion, $sollwert);
+            $bau = zd_befehl_bauen($g, $aktion, $sollwert, $cfg);
             break;
 
         default:

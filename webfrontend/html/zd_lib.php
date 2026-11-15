@@ -264,6 +264,12 @@ function zd_vorgaben()
         'haus_speicher_ein' => 0,
         'befehle_mqtt_ein'  => 0,
         'endpunkt_ein'      => 0,
+        /* 0.9.47 (Issue 1), ab Werk und beim Update aus: "Grenzwerte ohne Flash schreiben (smartMode)". Eingeschaltet
+         * schreibt der Dienst Abgabe- und Aufnahmegrenze (grenzeaus, grenzeein) beim Befehlssatz zensdk mit
+         * smartMode 1 dazu - nach derselben Regel wie laden und entladen: smartMode 1 bei einem Wert ungleich 0,
+         * smartMode 0 bei 0. Ein mit smartMode 1 geschriebener Wert landet nicht im Flash-Speicher, uebersteht aber
+         * keinen Neustart des Geraets. Andere Befehlssaetze kennen smartMode nicht; dort bleibt alles, wie es war. */
+        'grenzen_smartmode_ein' => 0,
         'schreibbremse'  => 30,     // Sekunden zwischen zwei Schreibbefehlen je Geraet
         'schrittweite'   => 50,     // Watt; Sollwerte werden darauf gerastert
         'verlauf_tage'   => 8,
@@ -3009,7 +3015,8 @@ function zd_sicherung_wert_pruefen($k, $v)
     }
     if (in_array($k, array('mqtt_ein', 'steuerung_ein', 'schutz_ein', 'energie_ein',
                            'wache_ein', 'wache_lb_melden', 'wache_sperren_ein',
-                           'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein'), true)) {
+                           'haus_speicher_ein', 'befehle_mqtt_ein', 'endpunkt_ein',
+                           'grenzen_smartmode_ein'), true)) {
         return ($v === 0 || $v === 1) ? '' : zd_t('EINST.SICH_SCHALTER');
     }
     $text = function ($x, $max) {
@@ -3198,7 +3205,7 @@ function zd_eingabe_felder($form)
             'liste' => array('g_name', 'g_art', 'g_ip', 'g_prodkey', 'g_deviceid', 'g_sn', 'g_modell',
                              'g_satz', 'g_max_laden', 'g_max_entladen', 'g_quittungsfeld', 'g_kapazitaet'),
             'haken' => array('steuerung_ein', 'schutz_ein', 'energie_ein',
-                             'wache_ein', 'wache_lb_melden', 'wache_sperren_ein'),
+                             'wache_ein', 'wache_lb_melden', 'wache_sperren_ein', 'grenzen_smartmode_ein'),
         );
     }
     if ($form === 'mqtt') {
@@ -5500,6 +5507,8 @@ function zd_vorlage_befehle($nummer = 1)
     foreach (array(
         array('ENTLADEN',  'entladen',  '', 'LOX.VQ_ENTLADEN',  array('watt' => '<v>')),
         array('LADEN',     'laden',     '', 'LOX.VQ_LADEN',     array('watt' => '<v>')),
+        // 0.9.47 (Issue 1): laden und entladen in einer Zahl, positiv = laden, negativ = abgeben, 0 = Stopp.
+        array('LEISTUNG',  'leistung',  '', 'LOX.VQ_LEISTUNG',  array('watt' => '<v>')),
         array('SOCMIN',    'socmin',    '', 'LOX.VQ_SOCMIN',    array('prozent' => '<v>')),
         array('SOCMAX',    'socmax',    '', 'LOX.VQ_SOCMAX',    array('prozent' => '<v>')),
         array('GRENZEAUS', 'grenzeaus', '', 'LOX.VQ_GRENZEAUS', array('watt' => '<v>')),
@@ -5763,26 +5772,47 @@ function zd_ep_abweisung($grund, $aktion = '')
  * Gleichwert-Unterdrueckung, Einreihen), dieselben Antwortzeilen, HTTP-Codes und Protokollzeilen (Probe: Antworten
  * byte-gleich mit 0.9.37). Der Endpunkt prueft vorher Token, Aktion und Muster; die Befehlsbruecke ruft dieselbe
  * Funktion mit Quelle 'mqtt' und von=mqtt (bin/befehle_zuordnung.php, E8).
- *   $aktion  laden|entladen|aus|socmin|socmax|grenzeaus|grenzeein|abruf
- *   $nr      Geraetenummer als Zeichenkette ohne fuehrende Null, $watt/$prozent '' oder Ziffern, $dry true|false,
+ *   $aktion  laden|entladen|leistung|aus|socmin|socmax|grenzeaus|grenzeein|abruf
+ *   $nr      Geraetenummer als Zeichenkette ohne fuehrende Null, $watt/$prozent '' oder Ziffern (bei leistung mit
+ *            Vorzeichen), $dry true|false,
  *   $von     Kennung der Schreiber-Wache ('' = ohne), $cfg Konfiguration (null = zd_config(false))
  * Rueckgabe array('http' => Code, 'aus' => vollstaendige Antwort, 'ok' => OK-Wert der ersten Zeile).
  */
 function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = null, $quelle = 'http')
 {
     if (!is_array($cfg)) { $cfg = zd_config(false); }
+    /* 0.9.47 (Issue 1): leistung ist laden und entladen in EINER Zahl mit Vorzeichen, nach der Hausvorgabe
+     * "positiv = laden" (Regeln/07; dieselbe Richtung wie BATP): umgesetzt in zd_leistung_umsetzen(), hier vor jeder
+     * weiteren Pruefung. Danach geht der Befehl genau den Weg von laden bzw. entladen - Grenzen des Geraets,
+     * Rasterung, Schutzschwellen, Schreibbremse, Gleichwert-Unterdrueckung, Schreiber-Wache, Rueckfall, Verfall.
+     * Antwort und Protokoll nennen weiter leistung ($zeige). Fuer alle anderen Aktionen ist $zeige === $aktion. */
+    $zeige = $aktion;
     $aus = function ($http, $text) {
         return array('http' => (int) $http, 'aus' => (string) $text,
                      'ok' => preg_match('/;OK=([0-9])/', (string) $text, $m) ? (int) $m[1] : 0);
     };
-    $ab = function ($grund) use ($aktion, $quelle) {
+    $ab = function ($grund) use ($zeige, $quelle) {
         if ($quelle === 'mqtt') {
-            zd_log_gebremst('mq_' . strtolower($grund), 'Befehlsbruecke: Befehl ' . preg_replace('/[^a-z0-9_]/i', '', (string) $aktion)
+            zd_log_gebremst('mq_' . strtolower($grund), 'Befehlsbruecke: Befehl ' . preg_replace('/[^a-z0-9_]/i', '', (string) $zeige)
                 . ' abgewiesen, Grund ' . $grund . '.', 60);
         } else {
-            zd_ep_abweisung($grund, $aktion);
+            zd_ep_abweisung($grund, $zeige);
         }
     };
+    if ($aktion === 'leistung') {
+        if ((string) $watt === '') {
+            $ab('WATT_FEHLT');
+            return $aus(400, "SET;OK=0;GRUND=WATT_FEHLT\n");
+        }
+        $um = zd_leistung_umsetzen($watt);
+        if ($um === null) {
+            // Abweisen, nicht zurechtbiegen: der Endpunkt und die Befehlsbruecke pruefen das Muster schon vorher.
+            $ab('PARAMETER');
+            return $aus(400, "SET;OK=0;AKTION=leistung;GRUND=PARAMETER\n"
+                . "Der Wert von watt ist keine ganze Zahl von -99999 bis 99999 - es wurde nichts eingereiht.\n");
+        }
+        list($aktion, $watt) = $um;
+    }
     $befehl = array('aktion' => $aktion, 'geraet' => (int) $nr);
     if ($dry) {
         $befehl['trocken'] = 1;
@@ -5803,7 +5833,7 @@ function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = nu
     $ger = zd_geraete();
     if (!isset($ger[$nr])) {
         $ab('GERAET_UNBEKANNT');
-        return $aus(404, sprintf("SET;OK=0;AKTION=%s;GRUND=GERAET_UNBEKANNT;N=%d\n", $aktion, count($ger))
+        return $aus(404, sprintf("SET;OK=0;AKTION=%s;GRUND=GERAET_UNBEKANNT;N=%d\n", $zeige, count($ger))
             . sprintf("Geraet %d ist nicht eingerichtet (eingerichtet: %d) - es wurde nichts gesendet. Reiter Einstellungen.\n",
                       (int) $nr, count($ger)));
     }
@@ -5822,7 +5852,7 @@ function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = nu
         list($wab, $wz) = zd_wache_anwenden($ger[$nr], $aktion, $von, $dry);
         if ($wab) {
             $ab('FREMDSCHREIBER');
-            return $aus(409, 'SET;OK=0;AKTION=' . $aktion . ';GRUND=FREMDSCHREIBER' . ($dry ? ';DRY=1' : '') . "\n"
+            return $aus(409, 'SET;OK=0;AKTION=' . $zeige . ';GRUND=FREMDSCHREIBER' . ($dry ? ';DRY=1' : '') . "\n"
                 . "Dieser Schreiber steht nicht in der Liste der erlaubten Schreiber (Reiter Einstellungen, Schreiber-Wache) - es wurde nichts eingereiht.\n");
         }
     }
@@ -5859,7 +5889,7 @@ function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = nu
         $gw = zd_gleichwert_oeffnen();
         if ($gw === false) {
             $ab('GLEICHWERT_MERKER');
-            return $aus(503, zd_wache_zeile('SET;OK=0;AKTION=' . $aktion . ";GRUND=GLEICHWERT_MERKER\n", $wz)
+            return $aus(503, zd_wache_zeile('SET;OK=0;AKTION=' . $zeige . ";GRUND=GLEICHWERT_MERKER\n", $wz)
                 . "Der Merker der Gleichwert-Unterdrueckung laesst sich nicht oeffnen - es wurde nichts gesendet. Protokoll im Reiter Logdateien.\n");
         }
         $gw_merker = zd_gleichwert_lesen($gw);
@@ -5867,15 +5897,34 @@ function zd_befehl_annehmen($aktion, $nr, $watt, $prozent, $dry, $von, $cfg = nu
         if ($seit >= 0) {
             zd_gleichwert_schliessen($gw, null);
             return $aus(200, zd_wache_zeile(sprintf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;SEIT_S=%d;MELDUNG=Derselbe Wert ging vor %d s hinaus - nichts gesendet.\n",
-                $aktion, $seit, $seit), $wz));
+                $zeige, $seit, $seit), $wz));
         }
     }
     list($erg, $meldung) = zd_befehl_absetzen($befehl);
     if ($gw !== null) {
         zd_gleichwert_schliessen($gw, zd_gleichwert_nachher($gw_merker, $gw_schl, $gw_wert, $erg === 1));
     }
-    return $aus($erg === 0 ? 500 : 200, zd_wache_zeile(sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $erg, $aktion,
+    return $aus($erg === 0 ? 500 : 200, zd_wache_zeile(sprintf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $erg, $zeige,
         str_replace(array("\r", "\n", ';'), ' ', $meldung)), $wz));
+}
+
+/**
+ * leistung (0.9.47, Issue 1) in laden oder entladen umsetzen - EINE Stelle fuer die Richtung.
+ *
+ * Hausvorgabe "positiv = laden" (Regeln/07, wie BATP dieses Plugins und BatterieBMS):
+ *   W > 0   laden W        (Befehlssatz zensdk: smartMode 1, acMode 1, inputLimit W, outputLimit 0)
+ *   W < 0   entladen -W    (zensdk: smartMode 1, acMode 2, outputLimit -W, inputLimit 0)
+ *   W = 0   entladen 0     (zensdk: smartMode 0, acMode 2, beide Grenzen 0 - derselbe Stopp wie "entladen 0")
+ * $w: Zeichenkette aus Ziffern mit optionalem Minus, hoechstens fuenf Ziffern (wie das Muster des Endpunkts).
+ * Rueckgabe array(aktion, watt als Zeichenkette ohne Vorzeichen) oder null, wenn der Wert nicht ins Muster passt.
+ */
+function zd_leistung_umsetzen($w)
+{
+    if (!is_string($w) || !preg_match('/^-?[0-9]{1,5}\z/', $w)) {
+        return null;
+    }
+    $n = (int) $w;
+    return $n > 0 ? array('laden', (string) $n) : array('entladen', (string) abs($n));
 }
 
 /**

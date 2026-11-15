@@ -431,6 +431,11 @@ function zd_pruefungen()
         : zd_pruefzeile(1, zd_t('TEST.F_RUECKFALL'),
             sprintf(zd_t('TEST.A_RUECKFALL_EIN'), (int) $cfg['rueckfall_min']));
 
+    // --- Grenzwerte ohne Flash (0.9.47, Issue 1; ab Werk aus) ---
+    $zeilen[] = empty($cfg['grenzen_smartmode_ein'])
+        ? zd_pruefzeile(-1, zd_t('TEST.F_GRENZEN_SMARTMODE'), zd_t('TEST.A_GRENZEN_SMARTMODE_AUS'))
+        : zd_pruefzeile(1, zd_t('TEST.F_GRENZEN_SMARTMODE'), zd_t('TEST.A_GRENZEN_SMARTMODE_EIN'));
+
     // --- Der eigene Endpunkt, wirklich abgerufen ---
     /* Nur im Reiter Test (U10): bis 0.9.27 lief der Selbstaufruf bei jedem
      * Seitenaufbau, und bei haengendem Webserver wartete jeder Reiter bis

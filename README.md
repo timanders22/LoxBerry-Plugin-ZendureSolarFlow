@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.46 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.47 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,20 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Neu in 0.9.47
+
+- **Neuer Befehl `leistung` – laden und entladen in einer Zahl (Issue #1):** `?token=T&aktion=leistung&watt=W[&geraet=N]` über den HTTP-Endpunkt, `<präfix>/befehl/leistung` (Gerät 2 bis 9: `<präfix>/befehl/<nr>/leistung`) über die Befehlsbrücke. `W` ist eine ganze Zahl von −99999 bis 99999. Das Vorzeichen folgt der Hausvorgabe *positiv = laden*, derselben Richtung wie `BATP`: ein positiver Wert lädt mit `W` Watt aus dem Netz (wie `laden`), ein negativer gibt `|W|` Watt ins Haus ab (wie `entladen`), 0 hält an (wie `entladen` mit 0 W).
+  - Danach geht der Befehl genau den Weg von `laden` und `entladen`: Grenzen des Geräts, Rasterung auf die Schrittweite, Schutzschwellen, Schreibbremse, Gleichwert-Unterdrückung, Schreiber-Wache, Rückfall und Verfall. Die Antwort nennt `AKTION=leistung`. Wie `laden` und `entladen` wirkt er nur mit *Schreibende Befehle zulassen*, über MQTT zusätzlich nur mit *Befehle über MQTT annehmen*. Ein Wert außerhalb des Musters wird mit HTTP 400 `GRUND=PARAMETER` abgewiesen; `laden&watt=-5` bleibt wie bisher abgewiesen.
+  - Neu im Reiter *Einbindung in Loxone* (Adresse, Erklärung und drei fertige Beispiele) und in der Vorlage der Steuerbefehle (`ZENDURE_<n>_CMD_LEISTUNG`); die MQTT-Vorlage der Befehlsbrücke führt ihn von selbst. Bestehende Befehle, Adressen und Vorlagenbefehle bleiben unverändert; eine schon importierte Vorlage arbeitet ohne neuen Import weiter.
+- **Beim SolarFlow 800 und 2400 ist die Leistung kein eigener Wert:** Die lokale Schnittstelle kennt dafür nur `acMode`, `inputLimit` und `outputLimit` (zenSDK, Eigenschaftsliste; offizielle Home-Assistant-Integration, `ZendureZenSdk.charge()`/`discharge()`). `laden`, `entladen` und `leistung` setzen deshalb beide Grenzen selbst, bei einer Leistung ungleich 0 mit `smartMode` 1, also ohne Schreiben in den Flash-Speicher. Ein vorher mit `grenzeaus` oder `grenzeein` gesetzter Wert bleibt dabei nicht stehen. Das stand bisher nur im Quelltext und steht jetzt im Reiter *Einbindung in Loxone* und in der Hilfe. An der Nutzlast dieser Befehle ändert sich nichts.
+- **Neuer Haken „Grenzwerte ohne Flash schreiben (smartMode)“** (Reiter *Einstellungen*, Schlüssel `grenzen_smartmode_ein`, ab Werk und beim Update aus): Eingeschaltet gehen `grenzeaus` und `grenzeein` beim Befehlssatz `zensdk` mit `smartMode` hinaus, nach derselben Regel wie `laden` und `entladen` (1 bei einem Wert ungleich 0, 0 bei 0). Nachteil: Ein mit `smartMode` 1 geschriebener Wert übersteht keinen Neustart des Geräts; laut Zendure-Dokumentation gelten danach wieder die zuletzt im Flash gespeicherten Werte. Ausgeschaltet ist die Nutzlast dieselbe wie bis 0.9.46; bei den anderen Befehlssätzen hat der Haken keine Wirkung. Der Schlüssel ist Teil von *Einstellungen sichern*; eine Sicherung einer früheren Fassung ohne ihn lässt den geltenden Wert stehen. Der Reiter *Test* zeigt in einer Zeile, wie er steht.
+- **Der Datenordner übersteht ein Update:** Bei jedem Update löscht LoxBerry den Datenordner des Plugins (`data/plugins/zendure/`, darin unter anderem die Warteschlange und die Antworten des Dienstes, die Merker der Gleichwert-Unterdrückung und des Sofortabrufs und unter `befehle/` der Zustand der Befehlsbrücke).
+  - `preupgrade.sh` sichert jetzt über den gemeinsamen Baustein `upgrade_daten.sh` (Fassung 1.1.0; ohne die wahlweisen Angaben `UPGD_OHNE` und `upgd_bei_fehler`, die diese Linie nicht setzt, verhält er sich wie 1.0.0) den ganzen Datenordner mit Unterordnern, Rechten und Zeitstempeln neben den Ordner (`data/plugins/zendure.upgrade_daten/`, Ordner 0700), ohne Sperr- und PID-Dateien und Sockets, und zählt die Kopie Datei für Datei gegen. Die bisherige Einzelsicherung der Laufzeitdateien (`zendure.upgrade_sicherung`) und die Sicherung der Konfiguration bleiben daneben unverändert.
+  - `postinstall.sh` spielt als Erstes jede Datei zurück, die nach dem Update fehlt; bei einer Neuinstallation geschieht dort nichts. Was die neue Fassung schon angelegt hat, wird nicht überschrieben; was davon nicht aus dem Archiv stammt, nennt das Installationsprotokoll mit Namen. Danach wird die Sicherung entfernt.
+  - Eine Sicherung, die älter als eine Stunde ist, wird nicht eingespielt und bleibt liegen; das Protokoll sagt es. Die Deinstallation räumt eine liegengebliebene Sicherung mit ab.
+- **Verhalten geändert – lieber kein Update als ein leerer Datenordner:** Lässt sich der Datenordner nicht vollständig sichern (zu wenig Platz, fehlende Rechte, eine unlesbare Datei), meldet `preupgrade.sh` das mit `<FAIL>` und bricht die Aktualisierung ab; die bisherige Fassung bleibt mit ihrem Datenordner installiert.
+- Nicht am Gerät gemessen: Die Befehlsformen stammen wie bisher aus der offiziellen Home-Assistant-Integration von Zendure und der zenSDK-Dokumentation.
 
 ## Neu in 0.9.46
 
@@ -1558,6 +1572,7 @@ Alle Aufrufe brauchen das Token aus dem Reiter *Einbindung in Loxone*.
 | `?token=T&aktion=rohgeraet[&geraet=N]` | die Antwort des Geräts, unverändert — mit den Eigenschaftsnamen Ihrer Firmware |
 | `?token=T&aktion=entladen&watt=W` | Abgabe ins Hausnetz vorgeben |
 | `?token=T&aktion=laden&watt=W` | aus dem Netz laden |
+| `?token=T&aktion=leistung&watt=W` | laden und entladen in einer Zahl (seit 0.9.47): positiv = laden, negativ = ins Haus abgeben, 0 = anhalten; `W` von −99999 bis 99999 |
 | `?token=T&aktion=aus` | Regie an das Gerät zurückgeben |
 | `?token=T&aktion=socmin&prozent=P` | untere Ladezustandsgrenze |
 | `?token=T&aktion=socmax&prozent=P` | obere Ladezustandsgrenze |
@@ -1591,7 +1606,8 @@ einer unbekannten Nummer antworten weiter mit HTTP 200 und
 Derselbe Sollwert (`laden`, `entladen`, `aus`, `socmin`, `socmax`, `grenzeein`,
 `grenzeaus`) je Gerät wird innerhalb von 60 s nicht erneut gesendet: die
 Antwort ist `SET;OK=1;AKTION=…;UNVERAENDERT=1;SEIT_S=…` mit HTTP 200.
-`laden`, `entladen` und `aus` gelten dabei als ein Sollwert, die Leistung.
+`laden`, `entladen` und `aus` gelten dabei als ein Sollwert, die Leistung;
+`leistung` zählt als `laden` beziehungsweise `entladen` mit dem Betrag.
 Ein anderer Wert geht sofort an den Dienst, dort gilt weiter die
 Schreibbremse. `abruf` und `dry=1` sind nicht betroffen. Lässt sich der
 Merker dafür nicht öffnen, antwortet der Endpunkt mit HTTP 503

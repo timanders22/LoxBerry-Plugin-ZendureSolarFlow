@@ -14,6 +14,8 @@
  *
  * Die Befehle (wie die schaltenden Aktionen des Endpunkts, Geraet 1; Geraet 2 bis 9 unter <praefix>/befehl/<nr>/...):
  *   laden, entladen   ganze Zahl in W (0 bis 99999 wie das Muster des Endpunkts; begrenzt wird im Dienst)
+ *   leistung          ganze Zahl in W mit Vorzeichen (-99999 bis 99999, 0.9.47): positiv = laden, negativ = entladen,
+ *                     0 = Stopp; zd_befehl_annehmen() setzt sie in laden bzw. entladen um (zd_leistung_umsetzen())
  *   aus               Puls (nur 1): Sollwert 0
  *   socmin, socmax    ganze Zahl in % (0 bis 100)
  *   grenzeaus/-ein    ganze Zahl in W (0 bis 99999)
@@ -42,7 +44,7 @@ $zd_bb_grund = 'Sollwerte kommen aus der Lade-/Entladeregelung in Loxone oft im 
     . 'totband_auffrischung erneut durch. Die Schreibbremse des Dienstes (30 s je Geraet) und die Gleichwert-'
     . 'Unterdrueckung (60 s) bleiben die eine Pruefung.';
 $zd_bb_tun = function ($aktion, $wert, $nr) {
-    $watt = in_array($aktion, array('laden', 'entladen', 'grenzeaus', 'grenzeein'), true) ? (string) (int) $wert : '';
+    $watt = in_array($aktion, array('laden', 'entladen', 'leistung', 'grenzeaus', 'grenzeein'), true) ? (string) (int) $wert : '';
     $proz = in_array($aktion, array('socmin', 'socmax'), true) ? (string) (int) $wert : '';
     return zd_befehl_quittung(zd_befehl_annehmen($aktion, (string) (int) $nr, $watt, $proz, false, 'mqtt', null, 'mqtt'));
 };
@@ -60,6 +62,13 @@ foreach (array('' => 1, '{nr}/' => 0) as $zd_vor => $zd_eins) {
                 return $zd_bb_tun($zd_a, $w, $zd_eins ? 1 : (int) $t['nr']);
             });
     }
+    // 0.9.47 (Issue 1): leistung mit Vorzeichen, sonst wie laden/entladen (eingreifend, Sperrminute 0 s).
+    $zd_bb[$zd_vor . 'leistung'] = array('art' => 'ganz', 'min' => -99999, 'max' => 99999, 'eingreifend' => true,
+        'sperre_s' => 0, 'begruendung' => $zd_bb_grund,
+        'titel' => 'Zendure Leistung' . $zd_gn . ' (MQTT)', 'kachel' => 'BEFEHL.K_LEISTUNG', 'quittung' => 'ausgefuehrt',
+        'tun' => function ($w, $t) use ($zd_bb_tun, $zd_eins) {
+            return $zd_bb_tun('leistung', $w, $zd_eins ? 1 : (int) $t['nr']);
+        });
     $zd_bb[$zd_vor . 'aus'] = array('art' => 'puls', 'eingreifend' => true, 'sperre_s' => 0, 'begruendung' => $zd_bb_grund,
         'titel' => 'Zendure Aus' . $zd_gn . ' (MQTT)', 'kachel' => 'BEFEHL.K_AUS', 'quittung' => 'ausgefuehrt',
         'tun' => function ($w, $t) use ($zd_bb_tun, $zd_eins) {

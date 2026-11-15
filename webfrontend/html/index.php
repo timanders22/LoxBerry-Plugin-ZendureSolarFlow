@@ -24,6 +24,9 @@
  * Schaltend (nur wenn im Reiter Einstellungen zugelassen):
  *   laden     &watt=W    [&geraet=N]
  *   entladen  &watt=W    [&geraet=N]
+ *   leistung  &watt=W    [&geraet=N]   W mit Vorzeichen, -99999 bis 99999 (0.9.47, Issue 1):
+ *                        positiv = laden, negativ = entladen (abgeben), 0 = Stopp wie "entladen 0";
+ *                        danach genau der Weg von laden/entladen (zd_leistung_umsetzen() in zd_lib.php)
  *   aus                  [&geraet=N]
  *   socmin    &prozent=P [&geraet=N]
  *   socmax    &prozent=P [&geraet=N]
@@ -157,7 +160,7 @@ if ($zd_selftest) {
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $zd_lesend = array('status', 'packs', 'liste', 'roh', 'rohgeraet', 'summe', 'energie');
-$zd_schaltend = array('laden', 'entladen', 'aus', 'socmin', 'socmax', 'grenzeaus', 'grenzeein', 'abruf');
+$zd_schaltend = array('laden', 'entladen', 'leistung', 'aus', 'socmin', 'socmax', 'grenzeaus', 'grenzeein', 'abruf');
 $zd_aktion = zd_get_text('aktion');
 if ($zd_aktion === null) {
     $zd_aktion = 'status';
@@ -216,7 +219,9 @@ function zd_param($name, $muster, $vorgabe = '')
  * Zeichenkette nachschlaegt. Jetzt 400 GRUND=PARAMETER, lesend wie schaltend. */
 $zd_nr      = zd_param('geraet', '/^(0|[1-9][0-9]?)\z/', '1');
 $zd_zeitraum = zd_param('zeitraum', '/^(tag|monat|jahr)\z/', 'tag');
-$zd_watt    = zd_param('watt', '/^[0-9]{1,5}\z/', '');
+/* watt traegt nur bei leistung ein Vorzeichen (0.9.47); fuer alle anderen Aktionen bleibt das Muster, wie es war -
+ * laden&watt=-5 bekommt weiter 400 GRUND=PARAMETER. */
+$zd_watt    = zd_param('watt', $zd_aktion === 'leistung' ? '/^-?[0-9]{1,5}\z/' : '/^[0-9]{1,5}\z/', '');
 $zd_prozent = zd_param('prozent', '/^[0-9]{1,3}\z/', '');
 /* Trockenlauf: rechnet den Befehl vollstaendig fertig und sendet ihn NICHT.
  * Nur 0 oder 1 - alles andere wird abgewiesen wie jeder andere Parameter. */
