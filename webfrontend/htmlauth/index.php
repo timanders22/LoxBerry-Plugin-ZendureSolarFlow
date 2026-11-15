@@ -219,9 +219,16 @@ if ($zd_post && isset($_POST['verlauf_csv'])) {
     exit;
 }
 
-/* ---------------- Konfiguration sichern ---------------- */
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Seit 0.9.48 baut das gemeinsame Sicherungsmodul Kopf und Inhalt
+ * (sicherung_bauen(), Beschreibung zd_sicherung_beschreibung()): _hinweis,
+ * _plugin = LoxBerry-Plugin-ZendureSolarFlow, _fassung, _stand, bei Bedarf
+ * _warnung (X-3: das Zurueckspielen wiese diese Datei ab, nur Namen), danach
+ * jede Einstellung oben - samt Aktionstoken und Broker-Zugang, ohne Sprechtoken
+ * und ohne Vermerke. Bis 0.9.47 lagen die Einstellungen unter "konfiguration". */
 if ($zd_post && isset($_POST['konfig_aus'])) {
-    $zd_js = zd_konfig_ausfuhr();
+    $zd_js = sicherung_json(sicherung_bauen(zd_sicherung_beschreibung(), zd_config()));
     if ($zd_js === '') {
         $zd_fehler[] = zd_t('EINST.KONFIG_KEIN_JSON');
     } else {
@@ -254,53 +261,80 @@ if ($zd_post && isset($_POST['konfig_erg'])) {
     $zd_tab = 'tab-settings';
 }
 
-/* ---------------- Konfiguration zurueckspielen ---------------- */
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * Seit 0.9.48 ueber das gemeinsame Sicherungsmodul. sicherung_eingang() prueft
+ * den Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+ * is_uploaded_file() und die Groesse (256 KB wie bisher) - bis 0.9.27 fehlten
+ * beide Pruefungen hier. sicherung_zurueckspielen() liest (eine Sicherung bis
+ * 0.9.47 mit dem Kennzeichen "Zendure SolarFlow" und den Einstellungen unter
+ * "konfiguration" packt das Modul aus), prueft jeden Wert
+ * (zd_sicherung_wert_pruefen(), zd_sicherung_quer()), verwirft Unbekanntes mit
+ * Namen und aendert bei einer Beanstandung gar nichts. Gespeichert wird genau
+ * der Stand, den das Modul liefert (zd_config_speichern() zieht die Zweitschrift
+ * mit). Danach wie bis 0.9.47, im Rueckruf 'nachziehen':
+ *   - Erfolg erst nach dem Zuruecklesen der Datei (SICH_NICHT_WIRKSAM);
+ *   - die Folgen fuer haus/speicher (zd_haus_folgen(), Gruppe 43);
+ *   - die Befehlsbruecke folgt, wenn sich befehle_mqtt_ein/mqtt_ein aendern;
+ *   - der laufende Dienst wird nachgezogen, und die Meldung sagt, was mit ihm
+ *     geschah (SICH_DIENST_NEU / SICH_DIENST_FEHL / SICH_DIENST_AUS, U5).
+ * Fehlersaetze aus diesen Schritten gehen wie bisher in $zd_fehler. Die Saetze
+ * des Moduls sind maskiert, die Meldungen dieser Seite werden roh ausgegeben. */
 if ($zd_post && isset($_POST['konfig_ein'])) {
-    /* Nur eine wirklich hochgeladene, einzelne Datei (Hausmuster, Werkzeuge/sicherung_pruefen.py):
-       konfig_datei[] liefert Listen statt Zeichenketten, und ohne is_uploaded_file() liesse sich ein
-       beliebiger Pfad als tmp_name unterschieben. Bis 0.9.27 fehlte beides. */
-    if (!isset($_FILES['konfig_datei']) || !is_array($_FILES['konfig_datei'])
-        || !isset($_FILES['konfig_datei']['tmp_name']) || !is_string($_FILES['konfig_datei']['tmp_name'])
-        || !is_uploaded_file($_FILES['konfig_datei']['tmp_name'])
-        || (int) $_FILES['konfig_datei']['error'] !== 0) {
-        $zd_fehler[] = zd_t('EINST.KONFIG_KEINE_DATEI');
-    } elseif ((int) $_FILES['konfig_datei']['size'] > 262144) {
-        // Eine Konfiguration dieses Plugins ist ein paar Kilobyte gross.
-        $zd_fehler[] = zd_t('EINST.KONFIG_ZU_GROSS');
-    } else {
-        $zd_inhalt = (string) @file_get_contents($_FILES['konfig_datei']['tmp_name']);
-        $zd_vor43 = zd_config();   // Gruppe 43: Stand vor dem Zurueckspielen (Folgen haus/speicher, Bruecke)
-        list($zd_kok, $zd_kmeld) = zd_konfig_einfuhr($zd_inhalt);
-        // Die Meldung ist HTML-sicher (U6): Auszeichnung dargestellt, Werte maskiert.
-        if ($zd_kok) {
-            $zd_meldungen[] = $zd_kmeld;
-            $zd_nach43 = zd_config();
-            list($zd_hm, $zd_hs) = zd_haus_folgen($zd_vor43, $zd_nach43);
-            if ($zd_hm !== '') {
-                if ($zd_hs === 'ok') { $zd_meldungen[] = zd_e($zd_hm); } else { $zd_fehler[] = zd_e($zd_hm); }
+    $zd_sb = zd_sicherung_beschreibung();
+    $zd_sfehl = array();
+    list($zd_sroh, $zd_sr) = sicherung_eingang($zd_sb, $_POST, $_FILES, 'konfig_datei');
+    if ($zd_sr === null) {
+        $zd_sb['speichern'] = function ($neu) { return zd_config_speichern($neu); };
+        $zd_sb['zweitschrift'] = function () {
+            $p = zd_paths();
+            return array($p['config'], $p['sicherung']);
+        };
+        $zd_sb['nachziehen'] = function ($neu, $jetzt) use (&$zd_sfehl) {
+            /* Erfolg erst nach dem ZURUECKLESEN (Wirkung statt Rueckgabewert), wie bis 0.9.47. */
+            $p = zd_paths();
+            clearstatcache(true, $p['config']);
+            $zurueck = zd_json_lesen($p['config']);
+            foreach ($neu as $k => $v) {
+                if (!array_key_exists($k, $zurueck) || json_encode($zurueck[$k]) !== json_encode($v)) {
+                    $zd_sfehl[] = sprintf(zd_t('EINST.SICH_NICHT_WIRKSAM'), zd_e($k));
+                    return array();
+                }
             }
-            $zd_bbv = !empty($zd_vor43['befehle_mqtt_ein']) && !empty($zd_vor43['mqtt_ein']);
-            $zd_bbn = !empty($zd_nach43['befehle_mqtt_ein']) && !empty($zd_nach43['mqtt_ein']);
+            $saetze = zd_sicherung_hinweise();
+            $nach = zd_config();
+            list($zd_hm, $zd_hs) = zd_haus_folgen($jetzt, $nach);
+            if ($zd_hm !== '') {
+                if ($zd_hs === 'ok') { $saetze[] = zd_e($zd_hm); } else { $zd_sfehl[] = zd_e($zd_hm); }
+            }
+            $zd_bbv = !empty($jetzt['befehle_mqtt_ein']) && !empty($jetzt['mqtt_ein']);
+            $zd_bbn = !empty($nach['befehle_mqtt_ein']) && !empty($nach['mqtt_ein']);
             if ($zd_bbv !== $zd_bbn) {
                 zd_bruecke_schalten($zd_bbn);
             }
-            zd_log('Konfiguration aus einer Sicherung zurueckgespielt.');
-            /* Den laufenden Dienst nachziehen und das Ergebnis melden (U5).
-             * Bis 0.9.27 stand nur "Bitte den Dienst neu starten". */
+            /* Den laufenden Dienst nachziehen und das Ergebnis melden (U5). */
             if (zd_dienst_pid() > 0) {
                 list($zd_rok, $zd_raus) = zd_dienst('restart');
                 clearstatcache();
                 if ($zd_rok && zd_dienst_pid() > 0) {
-                    $zd_meldungen[] = zd_t('EINST.SICH_DIENST_NEU');
+                    $saetze[] = zd_t('EINST.SICH_DIENST_NEU');
                 } else {
-                    $zd_fehler[] = zd_t('EINST.SICH_DIENST_FEHL') . ' ' . zd_e($zd_raus);
+                    $zd_sfehl[] = zd_t('EINST.SICH_DIENST_FEHL') . ' ' . zd_e($zd_raus);
                 }
             } else {
-                $zd_meldungen[] = zd_t('EINST.SICH_DIENST_AUS');
+                $saetze[] = zd_t('EINST.SICH_DIENST_AUS');
             }
-        } else {
-            $zd_fehler[] = $zd_kmeld;
-        }
+            return $saetze;
+        };
+        $zd_sb['log'] = 'zd_log';
+        $zd_sr = sicherung_zurueckspielen($zd_sb, $zd_sroh);
+    }
+    $zd_sm = sicherung_meldungen($zd_sb, $zd_sr);
+    foreach ($zd_sm['hinweise'] as $zd_s) {
+        $zd_meldungen[] = $zd_s;
+    }
+    foreach (array_merge($zd_sm['fehler'], $zd_sfehl) as $zd_s) {
+        $zd_fehler[] = $zd_s;
     }
     $zd_tab = 'tab-settings';
 }
@@ -1584,6 +1618,7 @@ foreach (array(
     <input data-role="none" type="hidden" name="fmt" value="<?= zd_e($zd_fmt) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="konfig_datei" accept=".json,application/json" style="max-width:220px;">
+    <?= sicherung_haken_zeile(zd_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="konfig_ein" value="1"><?= zd_e(zd_t('EINST.K_KONFIG_EIN')) ?></button>
   </form>
 </div>

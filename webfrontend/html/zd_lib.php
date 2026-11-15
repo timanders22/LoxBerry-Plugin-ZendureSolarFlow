@@ -40,6 +40,10 @@ if (!function_exists('zd_e')) {
  * dieser Datei. */
 require_once __DIR__ . '/haus_anbieter.php';
 
+/* 0.9.48: das gemeinsame Sicherungsmodul ("Einstellungen sichern" und "Einstellungen zurueckspielen"),
+ * byte-gleiche Abschrift der Stammfassung Werkzeuge/gemeinsam/sicherung.php; liegt neben dieser Datei. */
+require_once __DIR__ . '/sicherung.php';
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -357,6 +361,15 @@ function zd_vorgaben()
         'wache_lb_melden'   => 0,   // neue Runde zusaetzlich als LoxBerry-Meldung
         'wache_sperren_ein' => 0,   // fremde Schreiber mit 409 abweisen
         'wache_erlaubt'     => '',  // erlaubte Schreiber: Kennung, Adresse oder Kennung@Adresse
+
+        /* --- Merker "war Anbieter" haus/speicher (zd_haus_frueher_setzen()) ---
+         * Keine Einstellung, sondern ein Vermerk nach der gemeinsamen Anbieterregel (haus_anbieter.php), der in der
+         * Konfiguration steht, damit er ein Update uebersteht. Seit 0.9.48 in den Vorgaben (Entscheidung des
+         * Hausherrn 15.11.2026: was ein gemeinsames Stueck in die Konfiguration schreibt, steht in den Vorgaben;
+         * jeder Schluessel hat einen ausdruecklichen Vorgabewert). 0 heisst dasselbe wie bis 0.9.47 das Fehlen: der
+         * Code fragt nur !empty(). Bis 0.9.47 nannte ihn der Reiter Test "fremd", sobald er gesetzt war. Nie in einer
+         * Sicherung; beim Zurueckspielen behaelt er seinen geltenden Wert ('nie_aus_datei'). */
+        '_haus_frueher'     => 0,
     );
 }
 
@@ -573,9 +586,15 @@ function zd_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rech
  */
 function zd_cfg_lage()
 {
-    $p = zd_paths();
+    return zd_cfg_lage_datei(zd_paths()['config']);
+}
+
+/** Die Lage einer bestimmten Konfigurationsdatei (seit 0.9.48 getrennt, damit der Reiter Test sie an einer
+ *  Probedatei messen kann, ohne die echte Konfiguration anzufassen). Rein lesend. */
+function zd_cfg_lage_datei($pfad)
+{
     $vorgaben = zd_vorgaben();
-    $datei = zd_json_lesen($p['config']);
+    $datei = zd_json_lesen($pfad);
     if (!is_array($datei)) {
         $datei = array();
     }
@@ -593,7 +612,10 @@ function zd_cfg_lage()
  *
  * Fremde bleiben stehen. Sie zu loeschen waere anmassend: diese Funktion
  * weiss nicht, ob dort der Rest einer aelteren Fassung steht oder etwas,
- * das der naechsten schon gehoert.
+ * das der naechsten schon gehoert. Seit 0.9.48 nennt die Meldung sie mit
+ * Namen, nie mit Werten (Entscheidung des Hausherrn 15.11.2026, "Ja, nennen
+ * und stehen lassen"; Regeln/05 "fremd -> NENNEN, stehen lassen"). Bis 0.9.47
+ * sagte nur der Reiter Test, dass es sie gibt.
  *
  * Rueckgabe: array(ok, Anzahl der ergaenzten Schluessel, Meldung).
  */
@@ -613,11 +635,24 @@ function zd_cfg_vervollstaendigen()
      *   [ROT] Konfiguration traegt das Token (Dienstweg): NEIN (erwartet JA)
      * Der Aufruf von zd_config() heilt jetzt vorher aus der Zweitschrift. */
     zd_config();
-    $lage = zd_cfg_lage();
+    return zd_cfg_vervollstaendigen_datei($p['config'], $p['sicherung']);
+}
+
+/** Der Kern von zd_cfg_vervollstaendigen() an einer bestimmten Datei $config mit ihrer Zweitschrift $zweit (seit
+ *  0.9.48 getrennt fuer die Probe im Reiter Test). Heilt nicht - das tut der Aufrufer vorher. */
+function zd_cfg_vervollstaendigen_datei($config, $zweit)
+{
+    $lage = zd_cfg_lage_datei($config);
+    // Nur Namen, durch sicherung_name() (keine Zeilenumbrueche, kein Semikolon, hoechstens 64 Zeichen) - nie Werte.
+    $fremd = $lage['fremd'] ? sprintf(zd_t('EINST.M_ERG_FREMD'), implode(', ', array_map('sicherung_name', $lage['fremd'])))
+                            : '';
+    $satz = function ($t) use ($fremd) {
+        return $fremd === '' ? $t : rtrim($t, '.') . '. ' . $fremd;
+    };
     if (!$lage['fehlend']) {
-        return array(1, 0, zd_t('EINST.M_ERG_NICHTS'));
+        return array(1, 0, $satz(zd_t('EINST.M_ERG_NICHTS')));
     }
-    $datei = zd_json_lesen($p['config']);
+    $datei = zd_json_lesen($config);
     if (!is_array($datei)) {
         $datei = array();
     }
@@ -626,7 +661,7 @@ function zd_cfg_vervollstaendigen()
      * Vorgaben ueber den abgeschnittenen Stand und machte ihn unlesbar, ohne
      * dass jemand das Token noch von Hand herausholen koennte. */
     if (!zd_config_hat_inhalt($datei)) {
-        return array(0, 0, sprintf(zd_t('EINST.M_ERG_KEIN_TOKEN'), $p['config'] . '.kaputt'));
+        return array(0, 0, sprintf(zd_t('EINST.M_ERG_KEIN_TOKEN'), $config . '.kaputt'));
     }
     $vorgaben = zd_vorgaben();
     foreach ($lage['fehlend'] as $k) {
@@ -637,13 +672,12 @@ function zd_cfg_vervollstaendigen()
      * Nebendatei an und benennt sie um - ohne diesen Wert stand die Datei
      * danach auf 0644 (gemessen 18.09.2026, Fall "dienst_erg": 644 statt
      * 600), obwohl zd_config_speichern() sie seit je auf 0600 haelt. */
-    if (!zd_json_schreiben($p['config'], $datei, 0600)) {
+    if (!zd_json_schreiben($config, $datei, 0600)) {
         return array(0, 0, zd_t('EINST.M_ERG_SCHREIBEN'));
     }
-    zd_zweitschrift_ziehen($p['config'], $p['sicherung'], $datei,
-                           array('aktionstoken'), 0600);
+    zd_zweitschrift_ziehen($config, $zweit, $datei, array('aktionstoken'), 0600);
     return array(1, count($lage['fehlend']),
-                 sprintf(zd_t('EINST.M_ERG_ERGAENZT'), implode(', ', $lage['fehlend'])));
+                 $satz(sprintf(zd_t('EINST.M_ERG_ERGAENZT'), implode(', ', $lage['fehlend']))));
 }
 
 /**
@@ -2775,190 +2809,191 @@ function zd_wache_aufraeumen()
     return $weg;
 }
 
-/* ---------------- Konfiguration sichern und zurueckspielen ----------------
+/* ---------------- Einstellungen sichern und zurueckspielen ----------------
  *
- * Die Datei traegt das AKTIONSTOKEN. Das ist Absicht und muss gesagt werden:
- * ohne das Token waere sie nach dem Zurueckspielen wertlos - jede Adresse im
- * Miniserver zeigte ins Leere und muesste von Hand nachgezogen werden. Mit
- * ihm ist sie ein Geheimnis und gehoert entsprechend behandelt.
+ * Seit 0.9.48 ueber das gemeinsame Sicherungsmodul (webfrontend/html/sicherung.php,
+ * byte-gleiche Abschrift der Stammfassung Werkzeuge/gemeinsam/sicherung.php 1.2.5;
+ * Auftrag des Hausherrn 12.11.2026, Entscheidungen vom 15.11.2026: "Modul 1.2.5 mit
+ * huelle", "Ja, so umsetzen"). Lesen, Pruefen und Zurueckspielen macht das Modul;
+ * bis 0.9.47 standen hier zd_konfig_ausfuhr() und zd_konfig_einfuhr().
+ *
+ * Die Datei traegt das AKTIONSTOKEN und den Zugang zum Broker (broker_user,
+ * broker_pw), beide aus zendure.json (0600). Das ist Absicht: ohne das Token waere
+ * sie nach dem Zurueckspielen wertlos - jede Adresse im Miniserver zeigte ins Leere.
+ * Nie darin: Sprechtoken (tts wird beim Sichern bereinigt) und die Vermerke
+ * ansage_token_herkunft, ansage_aus_datei und _haus_frueher ('nie_aus_datei'; sie
+ * behalten beim Zurueckspielen ihren geltenden Wert).
+ *
+ * Kennzeichen: bis 0.9.47 schrieb der Knopf _plugin = "Zendure SolarFlow" - mit
+ * Leerzeichen keine Namensform, die das Modul annimmt - und legte die Einstellungen
+ * unter "konfiguration" ab (gemessen 15.11.2026 an allen 31 Fassungen 0.9.15 bis
+ * 0.9.48 im Arbeitsordner). Seit 0.9.48 traegt die Datei den Namen des Repositorys
+ * und die Einstellungen oben. Das alte Kennzeichen nimmt 'kennzeichen_frueher' an,
+ * die Huelle "konfiguration" packt das Modul aus ('huelle'); ein eigener Lesezweig
+ * fuer alte Dateien steht hier nicht.
+ *
+ * Was sich gegen 0.9.47 aendert (Regeln des Moduls, fuer alle Linien gleich):
+ *  - ein unbekannter Schluessel der Datei wird verworfen und mit Namen genannt; bis
+ *    0.9.47 wies er die ganze Datei ab. Eine Einstellung der GELTENDEN
+ *    Konfiguration, die diese Fassung nicht kennt, faellt beim Zurueckspielen weg
+ *    und wird genannt (bis 0.9.47 blieb sie still stehen);
+ *  - ein leerer Wert ('') ueberschreibt keinen bestehenden; bis 0.9.47 galt das nur
+ *    fuer das Aktionstoken;
+ *  - fehlen darf nur, was eine Vorfassung noch nicht kannte (zd_sicherung_spaet());
+ *    es behaelt den geltenden Wert und wird genannt. Die uebrigen Schluessel schrieb
+ *    jede Fassung; fehlt einer, wird die Datei abgewiesen. Bis 0.9.47 waren nur
+ *    geraete und aktionstoken Pflicht, jeder andere fehlende Schluessel behielt
+ *    still den geltenden Wert;
+ *  - "Einstellungen zurueckspielen" wirkt nur mit dem Haken des Moduls.
+ * Wie bisher: jeder Wert geht durch zd_sicherung_wert_pruefen() (dieselbe Pruefung
+ * wie Formular und Schreiber-Wache), dazu die Kreuzpruefungen in
+ * zd_sicherung_quer(); eine halb gueltige Datei aendert nichts, alle Beanstandungen
+ * werden gesammelt; die Freigaben steuerung_ein und befehle_mqtt_ein werden nie
+ * still eingeschaltet (zd_sicherung_vorbereiten()).
  */
 
-/** Die Konfiguration als lesbares JSON, mit Kopfzeilen zur Herkunft. */
-function zd_konfig_ausfuhr()
+/** Was einer Sicherung fehlen darf: die Schluessel, die eine Vorfassung noch nicht
+ *  schrieb (gemessen 15.11.2026 mit dem Knopf jeder Fassung 0.9.15 bis 0.9.48 unter
+ *  PHP 7.4 und 8.4). Sie behalten den geltenden Wert, und die Meldung nennt sie. */
+function zd_sicherung_spaet()
 {
-    $cfg = zd_config();
-    $daten = array(
-        '_plugin'  => 'Zendure SolarFlow',
-        '_fassung' => zd_fassung(),
-        '_erzeugt' => date('c'),
-        '_hinweis' => 'Diese Datei enthaelt das Aktionstoken und, falls eingetragen, '
-                    . 'das Broker-Passwort. Bitte wie ein Passwort behandeln.',
+    return array_merge(zd_wache_schluessel(),                             // seit 0.9.32
+                       zd_neue_schluessel_0938(),                         // seit 0.9.38
+                       array('tts', 'ansage_regeln', 'ansage_haken'),     // seit 0.9.40
+                       array('grenzen_smartmode_ein'));                   // seit 0.9.47
+}
+
+/** Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul. */
+function zd_sicherung_beschreibung()
+{
+    $p = zd_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                        + array('fehlt' => 'behalten')))
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Seit 0.9.40: eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei
+                          * eines, wird sie abgewiesen. Gemessen am Block der DATEI ($roh), denn Regel 3 des Moduls
+                          * setzt ein leeres Feld vorher auf den geltenden Wert. */
+                         if (ansage_sicherung_mangel($roh) || zd_ansage_wert('tts', ansage_sicherung_bereinigen($w)) !== true) {
+                             return sprintf(zd_t('EINST.SICH_WERT'), 'tts', zd_t('ANSAGEPLUGIN.M_FEHL'));
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, zd_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
+        'ansage_haken' => sicherung_block(array('befund')),
+        // Die Felder einer Geraetezeile wie zd_geraet_zeile_pruefen(); ein unbekanntes Feld verwirft das Modul.
+        'geraete' => sicherung_liste(array('name', 'art', 'ip', 'prodkey', 'deviceid', 'sn', 'modell', 'satz',
+                                           'quittungsfeld', 'kapazitaet_wh', 'max_laden', 'max_entladen')),
+        // Feldzuordnungen: die Namen kommen aus zd_feldkarte()/zd_packkarte(); geprueft wie bisher.
+        'zuordnung' => sicherung_offen(),
+        'packzuordnung' => sicherung_offen(),
     );
-    /* X-3: Wuerde das Zurueckspielen genau diese Datei abweisen, sagt es der
-     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
-    $warn = zd_rueckspiel_befund($cfg);
-    if ($warn) {
-        $daten['_warnung'] = sprintf(zd_t('EINST.SICH_X3_KOPF'), implode(', ', $warn));
+    foreach (zd_sicherung_spaet() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
     }
-    $daten['konfiguration'] = zd_ansage_fuer_sicherung($cfg);     // 0.9.40: nie ein Sprechtoken
-    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    return $js === false ? '' : $js;
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-ZendureSolarFlow',
+        'kennzeichen_frueher' => array('Zendure SolarFlow'),
+        'huelle' => 'konfiguration',
+        /* _fassung aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()) - keine weitere Stelle
+         * neben denen, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => zd_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei', '_haus_frueher'),
+        'pruefen' => function ($k, $w) {
+            $g = zd_sicherung_wert_pruefen((string) $k, $w);
+            return $g === '' ? '' : sprintf(zd_t('EINST.SICH_WERT'), zd_e($k), $g);
+        },
+        'quer' => 'zd_sicherung_quer',
+        'vorbereiten' => 'zd_sicherung_vorbereiten',
+        'jetzt' => 'zd_ansage_cfg',
+        't' => 'zd_t',
+    );
+}
+
+/** Die Kreuzpruefungen wie im Formular (Rueckruf 'quer'): Ladegrenze unter der Entladegrenze, und Sperren ohne einen
+ *  erlaubten Schreiber (Energie-1 C1). Rueckgabe: Liste von array(Name, Satz); der Satz erscheint einmal. */
+function zd_sicherung_quer($neu)
+{
+    $q = array();
+    if ((int) $neu['schutz_soc_min'] >= (int) $neu['schutz_soc_max']) {
+        $q[] = array('schutz_soc_min', zd_t('EINST.FEHLER_SOC_REIHE'));
+        $q[] = array('schutz_soc_max', zd_t('EINST.FEHLER_SOC_REIHE'));
+    }
+    if (zd_wache_kreuz($neu)) {
+        $q[] = array('wache_sperren_ein', zd_t('EINST.SICH_WACHE_KREUZ'));
+        $q[] = array('wache_erlaubt', zd_t('EINST.SICH_WACHE_KREUZ'));
+    }
+    return $q;
+}
+
+/** Die Saetze, die zd_sicherung_vorbereiten() fuer die Meldung hinterlaesst (nur beim Zurueckspielen gesetzt). */
+function zd_sicherung_hinweise($setzen = null)
+{
+    static $h = array();
+    if (is_array($setzen)) { $h = $setzen; }
+    return $h;
 }
 
 /**
- * Eine Sicherung zurueckspielen.
- *
- * Rueckgabe: array(ok, Meldung). Geprueft wird, BEVOR etwas geschrieben wird -
- * eine halb zurueckgespielte Konfiguration waere schlimmer als gar keine.
+ * Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls):
+ *  - der Block tts wird vervollstaendigt wie bis 0.9.47 (zd_ansage_sicherung_vor()),
+ *    und die geltenden Sprechtoken bleiben (die Sicherung traegt keine); kam er
+ *    nicht aus der Datei, steht dort schon der geltende;
+ *  - ansage_aus_datei = 1: nach dem Zurueckspielen gilt die Sprachausgabe der
+ *    Sicherung, eine liegengebliebene ansage.json wird nicht mehr uebernommen (wie
+ *    bisher); den Herkunftsvermerk haelt das Modul ('nie_aus_datei');
+ *  - schreibende Befehle (steuerung_ein) und Befehle ueber MQTT (befehle_mqtt_ein)
+ *    schaltet eine Sicherung nie still ein: sind sie geltend aus, bleiben sie aus,
+ *    und die Meldung sagt es (wie bisher, SICH_STEUERUNG_AUS, SICH_BEFEHLE_AUS).
  */
-function zd_konfig_einfuhr($inhalt, $nur_pruefen = false, &$namen = null)
+function zd_sicherung_vorbereiten($neu, $jetzt, $r)
 {
-    /* X-3: $namen sammelt die Namen der abgewiesenen Schluessel (nie Werte);
-     * $nur_pruefen endet nach der Pruefung, ohne etwas zu schreiben. So prueft
-     * zd_rueckspiel_befund() die eigene Sicherung mit DIESER Funktion. */
-    $namen = array();
-    /* JEDER Wert wird geprueft, mit den Regeln des Formulars (Befund U4/C3,
-     * 29.09.2026, Bauart E). Bis 0.9.27 wurde nur das Vorhandensein von
-     * geraete und aktionstoken geprueft und dann array_merge() gespeichert:
-     * Token als Liste (der Endpunkt nahm danach "token=Array"), Token "a",
-     * steuerung_ein=1, fremde Schluessel, Listen statt Zeichenketten - alles
-     * mit "zurueckgespielt" quittiert. Jetzt:
-     *   - ein fremder Schluessel oder ein unzulaessiger Wert: nichts geaendert
-     *   - ein fehlender Schluessel: der geltende Wert bleibt (auch das
-     *     Broker-Passwort)
-     *   - leeres Token: das geltende bleibt, und die Meldung sagt es
-     *     (Bauform Renault 2.1.13 U4)
-     *   - steuerung_ein wird nie still eingeschaltet
-     *   - Erfolg erst nach dem Zuruecklesen der Datei
-     * Die Rueckgabe ist HTML-sicher (Werte maskiert), Auszeichnung aus den
-     * Sprachdateien bleibt stehen (U6). */
-    $d = json_decode((string) $inhalt, true);
-    if (!is_array($d)) {
-        return array(0, zd_t('EINST.KONFIG_KEIN_JSON'));
+    $h = array();
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
     }
-    $neu = isset($d['konfiguration']) && is_array($d['konfiguration']) ? $d['konfiguration'] : $d;
-    $neu = zd_ansage_rueck($neu);     // 0.9.40: Token und Vermerk bleiben die geltenden
-    // Ein Merkmal, an dem sich eine Zendure-Sicherung erkennen laesst. Die
-    // Meldung nennt nur, was wirklich fehlt (U6).
-    $fehlt = array();
-    foreach (array('geraete', 'aktionstoken') as $k) {
-        if (!array_key_exists($k, $neu)) {
-            $fehlt[] = "<span class='sm-mono'>" . $k . '</span>';
-            $namen[] = $k;
-        }
+    $neu['ansage_aus_datei'] = 1;
+    if (!empty($neu['steuerung_ein']) && empty($jetzt['steuerung_ein'])) {
+        $neu['steuerung_ein'] = 0;
+        $h[] = zd_t('EINST.SICH_STEUERUNG_AUS');
     }
-    if ($fehlt) {
-        return array(0, sprintf(zd_t('EINST.KONFIG_FREMD'), implode(', ', $fehlt)));
+    if (!empty($neu['befehle_mqtt_ein']) && empty($jetzt['befehle_mqtt_ein'])) {
+        $neu['befehle_mqtt_ein'] = 0;
+        $h[] = zd_t('EINST.SICH_BEFEHLE_AUS');
     }
-    $vorgaben = zd_vorgaben();
-    $bean = array();
-    $gut = array();
-    foreach ($neu as $k => $v) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') {
-            continue;       // lesbarer Kopf der eigenen Sicherung
-        }
-        if (!array_key_exists($k, $vorgaben)) {
-            $bean[] = sprintf(zd_t('EINST.SICH_FREMD'), zd_e($k));
-            $namen[] = $k;
-            continue;
-        }
-        $grund = zd_sicherung_wert_pruefen($k, $v);
-        if ($grund !== '') {
-            $bean[] = sprintf(zd_t('EINST.SICH_WERT'), zd_e($k), $grund);
-            $namen[] = $k;
-            continue;
-        }
-        $gut[$k] = $v;
-    }
-    $alt = zd_config();
-    $cfg = $alt;
-    foreach ($gut as $k => $v) {
-        $cfg[$k] = $v;
-    }
-    if ((int) $cfg['schutz_soc_min'] >= (int) $cfg['schutz_soc_max']) {
-        $bean[] = zd_t('EINST.FEHLER_SOC_REIHE');
-        $namen[] = 'schutz_soc_min';
-        $namen[] = 'schutz_soc_max';
-    }
-    /* Energie-1 C1: Sperren an ohne erlaubten Schreiber - dieselbe Kreuzpruefung wie das
-     * Formular. Ueber $namen warnt damit auch "Einstellungen sichern" (X-3). */
-    if (zd_wache_kreuz($cfg)) {
-        $bean[] = zd_t('EINST.SICH_WACHE_KREUZ');
-        $namen[] = 'wache_sperren_ein';
-        $namen[] = 'wache_erlaubt';
-    }
-    if ($bean) {
-        return array(0, zd_t('EINST.SICH_ABGEWIESEN') . '<br>' . implode('<br>', $bean));
-    }
-    if ($nur_pruefen) {
-        return array(1, '');
-    }
-    $hinweise = array();
-    /* Energie-1 C1: eine Sicherung von vor der Schreiber-Wache kennt deren Einstellungen
-     * nicht. Sie ist trotzdem gueltig - ein fehlender Schluessel behaelt hier ohnehin den
-     * geltenden Wert -, und die Meldung sagt es. */
-    $zd_wfehlt = array_values(array_diff(zd_wache_schluessel(), array_keys($neu)));
-    if ($zd_wfehlt) {
-        $hinweise[] = sprintf(zd_t('EINST.SICH_WACHE_BEHALTEN'), zd_e(implode(', ', $zd_wfehlt)));
-    }
-    /* Gruppe 43 (0.9.38): eine Sicherung aus 0.9.37 oder frueher kennt die neuen Haken nicht - es gilt weiter, was
-     * eingestellt ist (Hinweis EINST.SICH_OHNE_G43), nichts wird abgewiesen. */
-    $zd_g43fehlt = array_values(array_diff(zd_neue_schluessel_0938(), array_keys($neu)));
-    if ($zd_g43fehlt) {
-        $hinweise[] = sprintf(zd_t('EINST.SICH_OHNE_G43'), zd_e(implode(', ', $zd_g43fehlt)));
-    }
-    if (!isset($gut['aktionstoken']) || $gut['aktionstoken'] === '') {
-        $cfg['aktionstoken'] = $alt['aktionstoken'];
-        $hinweise[] = zd_t('EINST.SICH_TOKEN_BEHALTEN');
-    }
-    if (!empty($gut['steuerung_ein']) && empty($alt['steuerung_ein'])) {
-        $cfg['steuerung_ein'] = 0;
-        $hinweise[] = zd_t('EINST.SICH_STEUERUNG_AUS');
-    }
-    /* Gruppe 43 (0.9.38): wie die Freigabe oben - eine Sicherung schaltet die Befehle ueber MQTT nicht ein. */
-    if (!empty($gut['befehle_mqtt_ein']) && empty($alt['befehle_mqtt_ein'])) {
-        $cfg['befehle_mqtt_ein'] = 0;
-        $hinweise[] = zd_t('EINST.SICH_BEFEHLE_AUS');
-    }
-    if (!zd_config_speichern($cfg)) {
-        return array(0, sprintf(zd_t('EINST.FEHLER_SPEICHERN'), zd_e(zd_paths()['config'])));
-    }
-    clearstatcache(true, zd_paths()['config']);
-    $zurueck = zd_json_lesen(zd_paths()['config']);
-    foreach ($cfg as $k => $v) {
-        if (!array_key_exists($k, $zurueck) || json_encode($zurueck[$k]) !== json_encode($v)) {
-            return array(0, sprintf(zd_t('EINST.SICH_NICHT_WIRKSAM'), zd_e($k)));
-        }
-    }
-    return array(1, sprintf(zd_t('EINST.KONFIG_ZURUECK'), count((array) $cfg['geraete']))
-                  . ($hinweise ? ' ' . implode(' ', $hinweise) : ''));
+    zd_sicherung_hinweise($h);
+    return $neu;
 }
 
 /**
  * X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen bestehen?
  *
- * Geprueft mit derselben zd_konfig_einfuhr() wie das Zurueckspielen, nur
- * ohne Schreiben - eine zweite Pruefliste waere eine zweite Wahrheit.
- * Rueckgabe: die Namen der Schluessel, die abgewiesen wuerden (nie Werte);
- * leer, wenn die Sicherung durchginge.
+ * Seit 0.9.48 ueber das Modul: die Datei, die "Einstellungen sichern" liefert,
+ * gegen dieselbe Pruefung wie das Zurueckspielen (sicherung_selbstpruefung()).
+ * Rueckgabe: die Namen der Einstellungen, an denen es scheitern wuerde (leer =
+ * geht durch) - nie Werte.
  */
 function zd_rueckspiel_befund($cfg = null)
 {
     if (!is_array($cfg)) {
         $cfg = zd_config();
     }
-    $js = json_encode(array('konfiguration' => zd_ansage_fuer_sicherung($cfg)),     // 0.9.40: wie die Ausfuhr
-                      JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) {
-        return array('konfiguration');
-    }
-    $namen = array();
-    list($ok) = zd_konfig_einfuhr($js, true, $namen);
-    if ($ok) {
-        return array();
-    }
-    return $namen ? array_values(array_unique(array_map('strval', $namen))) : array('konfiguration');
+    $b = zd_sicherung_beschreibung();
+    // Ziel ist der Stand selbst (kein zd_ansage_cfg(): das kann beim Anzeigen der Seite schreiben).
+    return sicherung_selbstpruefung($b, sicherung_bauen($b, $cfg), $cfg);
 }
 
 /** Zahlenfelder des Reiters Einstellungen: Feld => array(von, bis). EINE Tabelle fuer Formular und Sicherung. */
@@ -3406,37 +3441,6 @@ function zd_gateway_fassung()
     return array('gefunden' => $f > 0 ? 1 : 0, 'fassung' => $f);
 }
 
-function zd_fassung()
-{
-    $p = zd_paths();
-    if ($p['home'] !== '') {
-        $db = zd_json_lesen($p['home'] . '/data/system/plugindatabase.json');
-        $liste = isset($db['plugins']) && is_array($db['plugins']) ? $db['plugins'] : $db;
-        if (is_array($liste)) {
-            foreach ($liste as $eintrag) {
-                if (is_array($eintrag) && isset($eintrag['folder'])
-                    && $eintrag['folder'] === $p['plugin'] && isset($eintrag['version'])) {
-                    return (string) $eintrag['version'];
-                }
-            }
-        }
-    }
-    foreach (array(
-        dirname(dirname(__DIR__)) . '/plugin.cfg',
-        dirname(dirname(dirname(__DIR__))) . '/plugin.cfg',
-    ) as $f) {
-        if (!is_file($f)) {
-            continue;
-        }
-        foreach (file($f, FILE_IGNORE_NEW_LINES) ?: array() as $z) {
-            if (preg_match('/^\s*VERSION\s*=\s*([0-9][0-9.]*)/', $z, $m)) {
-                return $m[1];
-            }
-        }
-    }
-    return '';
-}
-
 /* ---------------- Befund, Healthcheck und Meldung ----------------
  *
  * EINE Funktion, drei Verbraucher: die Oberflaeche, bin/healthcheck und der
@@ -3542,48 +3546,6 @@ function zd_ansage_wert($k, $w)
             return in_array($w, array(0, 1, '0', '1'), true);
     }
     return false;
-}
-
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function zd_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function zd_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = zd_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, zd_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = zd_tts($j);
-    }
-    foreach (array_diff(zd_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -3905,13 +3867,6 @@ function zd_ansage_senden($jetzt = null)
     flock($fh, LOCK_UN);
     fclose($fh);
     return $erg;
-}
-
-/** Die Sicherung vor dem Zurueckspielen (Feld statt Rohtext). */
-function zd_ansage_rueck(array $neu)
-{
-    $j = json_decode((string) zd_ansage_sicherung_vor((string) json_encode($neu)), true);
-    return is_array($j) ? $j : $neu;
 }
 
 /** Aus zd_melden(): der Befund hat gewechselt. Stoerung = alles ausser ok und "keine Geraete"/"Dienst aus" (gewollt). Rueckgabe: das Ergebnis von zd_ansage_legen(). */
@@ -6832,7 +6787,8 @@ function zd_haus_takt(array $werte, array $geraete, array $cfg, $zaehler, $skrip
 /* ---------- G3/Sicherung: neue Schluessel dieser Fassung ---------- */
 
 /** Schluessel, die 0.9.38 neu einfuehrt. Eine Sicherung ohne sie wird angenommen; es gilt weiter, was eingestellt ist
- *  (Hinweis EINST.SICH_OHNE_G43). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh); befehle_mqtt_ein ab Werk
+ *  (seit 0.9.48 ueber zd_sicherung_spaet(), Satz K_FEHLT_BEHALTEN des Sicherungsmoduls; bis 0.9.47 Hinweis
+ *  EINST.SICH_OHNE_G43). endpunkt_ein ab Werk 0, beim Update 1 (postinstall.sh); befehle_mqtt_ein ab Werk
  *  und beim Update 0; haus_speicher_ein ab Werk 0. */
 function zd_neue_schluessel_0938()
 {

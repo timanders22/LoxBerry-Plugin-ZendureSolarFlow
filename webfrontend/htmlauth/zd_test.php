@@ -12,6 +12,54 @@ function zd_pruefzeile($stand, $frage, $antwort)
 }
 
 /**
+ * 0.9.48 (Entscheidung des Hausherrn 15.11.2026, "Ja, nennen und stehen lassen"):
+ * Nennt "Fehlende Einstellungen ergaenzen" eine unbekannte Einstellung mit Namen,
+ * laesst es sie stehen, und bleibt ihr Wert aus der Meldung?
+ *
+ * Gemessen mit Wirkung, an einer PROBEDATEI in einem eigenen Ordner unter dem
+ * temporaeren Verzeichnis, nicht an der echten Konfiguration: die Vorgaben ohne
+ * intervall, ein Probe-Aktionstoken und eine unbekannte Einstellung mit Wert.
+ * Gerufen wird derselbe Kern wie vom Knopf (zd_cfg_vervollstaendigen_datei()).
+ * Danach werden Probedatei, Zweitschrift und Ordner entfernt.
+ * Rueckgabe: array(stand, Text) mit stand 1, 0 oder -1 (nicht messbar).
+ */
+function zd_vervollstaendigen_probe()
+{
+    $ord = rtrim(sys_get_temp_dir(), '/\\') . '/zd_vprobe_' . getmypid() . '_' . mt_rand(100000, 999999);
+    if (!@mkdir($ord, 0700)) {
+        return array(-1, sprintf(zd_t('TEST.A_ERG_FREMD_NICHT'), zd_e($ord)));
+    }
+    $cfg = $ord . '/zendure.json';
+    $zweit = $ord . '/zendure.backup.json';
+    $name = 'zz_probe_unbekannt';
+    $wert = 'ProbeWert' . mt_rand(100000, 999999);
+    $d = zd_vorgaben();
+    unset($d['intervall']);
+    $d['aktionstoken'] = 'probe' . substr(md5((string) mt_rand()), 0, 19);
+    $d[$name] = $wert;
+    $erg = zd_json_schreiben($cfg, $d, 0600) ? zd_cfg_vervollstaendigen_datei($cfg, $zweit) : null;
+    $nach = is_file($cfg) ? json_decode((string) @file_get_contents($cfg), true) : null;
+    foreach (array_merge(array($cfg, $zweit), glob($ord . '/*') ?: array()) as $f) {
+        if (is_file($f)) { @unlink($f); }
+    }
+    @rmdir($ord);
+    if (!is_array($erg)) {
+        return array(-1, sprintf(zd_t('TEST.A_ERG_FREMD_NICHT'), zd_e($ord)));
+    }
+    $mangel = array();
+    if (strpos((string) $erg[2], $name) === false) { $mangel[] = zd_t('TEST.A_ERG_FREMD_M_NAME'); }
+    if (strpos((string) $erg[2], $wert) !== false) { $mangel[] = zd_t('TEST.A_ERG_FREMD_M_WERT'); }
+    if (!is_array($nach) || !isset($nach[$name]) || $nach[$name] !== $wert) { $mangel[] = zd_t('TEST.A_ERG_FREMD_M_WEG'); }
+    if (!is_array($nach) || !array_key_exists('intervall', $nach) || (int) $erg[1] !== 1) {
+        $mangel[] = zd_t('TEST.A_ERG_FREMD_M_ERG');
+    }
+    if ($mangel) {
+        return array(0, sprintf(zd_t('TEST.A_ERG_FREMD_FEHL'), implode(' ', $mangel)));
+    }
+    return array(1, sprintf(zd_t('TEST.A_ERG_FREMD_OK'), $name));
+}
+
+/**
  * Den EIGENEN Endpunkt wirklich abrufen.
  *
  * Bis 0.9.11 bot der Reiter Test drei Links an, die jemand anklicken sollte.
@@ -498,6 +546,10 @@ function zd_pruefungen()
         $zeilen[] = zd_pruefzeile(1, zd_t('TEST.F_CFG'),
             sprintf(zd_t('TEST.A_CFG_OK'), (int) $lage['anzahl']));
     }
+
+    // 0.9.48: nennt "Fehlende Einstellungen ergaenzen" Unbekanntes und laesst es stehen? (an einer Probedatei)
+    list($zd_vst, $zd_vtx) = zd_vervollstaendigen_probe();
+    $zeilen[] = zd_pruefzeile($zd_vst, zd_t('TEST.F_ERG_FREMD'), $zd_vtx);
 
     list($fstand, $ftext) = zd_formularprobe(__DIR__ . '/index.php');
     $zeilen[] = zd_pruefzeile($fstand, zd_t('TEST.F_FORMULARE'), zd_e($ftext));

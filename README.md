@@ -4,7 +4,7 @@ Bindet **Zendure SolarFlow** an Loxone an — **ohne Cloud, ohne Zendure-Konto**
 Unterstützt beide lokalen Wege: die HTTP-Schnittstelle der neueren Geräte und
 lokales MQTT für die ältere Reihe.
 
-> **Version 0.9.47 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
+> **Version 0.9.48 — ohne Zendure-Gerät gebaut.** Aufbau, Sprachdateien,
 > Endpunkt und Oberfläche sind geprüft; ob die Eigenschaftsnamen der eigenen
 > Firmware passen und ob die Schreibbefehle am Gerät wirken, ist es **nicht**.
 > Deshalb 0.9.14 und nicht 1.0.0.
@@ -18,6 +18,21 @@ lokales MQTT für die ältere Reihe.
 > Die Selbstaktualisierung zeigt auf dieses Repository und ist eingeschaltet.
 > Bei gleicher Fassung wird niemandem ein Update angeboten; sobald 1.0.0
 > erscheint, greift sie von selbst.
+
+## Neu in 0.9.48
+
+- **„Einstellungen sichern“ und „Zurückspielen“ laufen über das gemeinsame Sicherungsmodul** (Fassung 1.2.5). Was sich für Sie ändert:
+  - **Haken vor dem Zurückspielen:** Der Knopf *Zurückspielen* wirkt nur, wenn der Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“ gesetzt ist. Ohne Haken wird die Datei nicht gelesen und nichts geändert; die Meldung sagt es.
+  - **Neue Form der Datei:** Der Kopf trägt `_plugin` = `LoxBerry-Plugin-ZendureSolarFlow` (bisher „Zendure SolarFlow“), `_fassung`, `_stand` und `_hinweis`; die Einstellungen stehen oben in der Datei statt unter `konfiguration`. Inhalt wie bisher: alle Einstellungen samt Aktionstoken und Zugang zum Broker (Benutzer und Passwort), ohne Sprechtoken. Die Datei bitte wie ein Passwort behandeln.
+  - **Ältere Sicherungen bleiben zurückspielbar:** Eine Sicherung aus 0.9.15 bis 0.9.47 (Kennzeichen „Zendure SolarFlow“, Einstellungen unter `konfiguration`) wird angenommen. Gemessen an allen 30 Fassungen 0.9.15 bis 0.9.47, die dem Autor vorliegen, je unter PHP 7.4 und 8.4. Umgekehrt nimmt 0.9.47 eine Sicherung aus 0.9.48 an (gemessen).
+  - **Unbekannte Einstellung in der Datei:** wird verworfen und mit Namen genannt; der Rest wird zurückgespielt. Bisher wies sie die ganze Datei ab. Dasselbe gilt für ein unbekanntes Feld in einer Gerätezeile.
+  - **Unbekannte Einstellung in der geltenden Konfiguration** (etwa von Hand eingetragen): fällt beim Zurückspielen weg und wird mit Namen genannt, nie mit Wert. Bisher blieb sie still stehen.
+  - **Leerer Wert in der Datei:** überschreibt keine bestehende Einstellung; sie bleibt und wird genannt. Bisher galt das nur für das Aktionstoken.
+  - **Fehlende Einstellung:** Fehlen dürfen nur die zwölf Einstellungen, die eine frühere Fassung noch nicht kannte (Schreiber-Wache seit 0.9.32; `haus_speicher_ein`, `befehle_mqtt_ein`, `endpunkt_ein` seit 0.9.38; Sprachansagen seit 0.9.40; `grenzen_smartmode_ein` seit 0.9.47). Sie behalten den geltenden Wert, und die Meldung nennt sie. Fehlt eine der übrigen 30 Einstellungen, die jede Fassung geschrieben hat, wird die Datei abgewiesen und nichts geändert. Bisher waren nur `geraete` und `aktionstoken` Pflicht, und jede andere fehlende Einstellung behielt still den geltenden Wert.
+  - **Wie bisher:** Jeder Wert wird mit denselben Regeln wie im Formular geprüft, dazu die Kreuzprüfungen (Ladegrenze unter Entladegrenze, *Fremde Schreiber abweisen* nur mit erlaubten Schreibern). Ist ein Wert unzulässig, ändert sich nichts, und die Meldung nennt alle beanstandeten Einstellungen. *Schreibende Befehle zulassen* und *Befehle über MQTT annehmen* schaltet eine Sicherung nicht ein. Danach folgen wie bisher die Themen `haus/speicher`, die Befehlsbrücke und der Dienst; die Meldung sagt, ob er neu gestartet wurde, nicht neu startete oder nicht läuft.
+- **„Fehlende Einstellungen ergänzen“ nennt unbekannte Einstellungen:** Der Knopf ergänzt wie bisher nur, was fehlt, und lässt unbekannte Einstellungen stehen; seine Meldung nennt sie jetzt mit Namen, nie mit Werten. Der Reiter *Test* misst das in einer neuen Zeile an einer Probedatei im temporären Ordner; die echte Konfiguration bleibt dabei unberührt.
+- **Merker `_haus_frueher` steht in den Vorgaben:** Der Merker „war Anbieter von `haus/speicher`“ steht in der Konfiguration, damit er ein Update übersteht. Bisher nannte ihn der Reiter *Test* als unbekannte Einstellung, sobald er gesetzt war. Jetzt hat er den Vorgabewert 0; das bedeutet dasselbe wie bisher sein Fehlen. Der Dienst schreibt ihn bei seinem nächsten Start in die Datei, ebenso das Speichern der Einstellungen und der Knopf *Fehlende Einstellungen ergänzen*; bis dahin nennt der Reiter *Test* ihn als fehlend. In einer Sicherung steht er nicht, beim Zurückspielen behält er seinen geltenden Wert.
+- Nicht am Gerät gemessen.
 
 ## Neu in 0.9.47
 
