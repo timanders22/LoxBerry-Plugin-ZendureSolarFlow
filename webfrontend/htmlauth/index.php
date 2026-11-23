@@ -1050,7 +1050,8 @@ $zd_logzeilen = zd_log_ende($zd_p['log'], 400);
 
 $zd_rahmen = class_exists('LBWeb', false);
 if ($zd_rahmen) {
-    LBWeb::lbheader('Zendure SolarFlow', 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Zendure SolarFlow', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 ?>
 <style>
