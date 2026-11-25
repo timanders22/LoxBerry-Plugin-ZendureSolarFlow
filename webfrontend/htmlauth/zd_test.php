@@ -365,6 +365,9 @@ function zd_pruefungen()
     $zeilen[] = zd_pruefzeile($mqttEin ? 1 : -1, zd_t('TEST.F_MQTT_EIN'),
         zd_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));
 
+    // 0.9.53: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $zd_hb = zd_pruef_praefix_haus($cfg);
+    $zeilen[] = zd_pruefzeile($zd_hb[0], zd_e(zd_t('HAUSBEREICH.F_TEST')), $zd_hb[1]);
     $m = zd_mqtt_zustand();
     if (!$m['gefunden']) {
         $zeilen[] = zd_pruefzeile(0, zd_t('TEST.F_MQTT'), zd_t('TEST.A_MQTT_NICHT_GEFUNDEN'));

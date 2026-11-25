@@ -2099,6 +2099,7 @@ function zd_abbild_schreiben(array $geraete, array $cfg)
         if ($praefix === '') {
             $praefix = 'zendure';
         }
+        zd_praefix_haus_melden($cfg);   // 0.9.53: Praefix im gemeinsamen Bereich? melden, nicht anhalten
         /* Die Paare baut seit 0.9.28 zd_mqtt_paare() in der Bibliothek:
          * dieselbe Funktion haelt der Reiter Test gegen die Themenliste (M10);
          * dort stehen auch M3 (Summe) und M7 (bei Stoerung nur online). */
