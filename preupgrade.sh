@@ -382,6 +382,10 @@ else
 fi
 
 zs_schluss
+# befehle/ und antworten/ ueberleben das Update bewusst nicht: die Befehlsbruecke legt befehle/ samt
+# Optionsdatei beim Start neu an, postinstall.sh beide Ordner leer (Regeln/06, Entscheidung des Hausherrn
+# 15.11.2026). Alles andere im Datenordner traegt der Baustein unten ueber das Update.
+UPGD_OHNE="befehle antworten"
 # [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
 # [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
 if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
